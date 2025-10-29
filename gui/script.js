@@ -1,4 +1,3 @@
-
 let ws;
 let seq = 0;
 let sentCount = 0;
