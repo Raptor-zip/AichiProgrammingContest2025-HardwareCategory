@@ -19,21 +19,30 @@ export function useWebSocket(interval, onLogEntry) {
   const wsRef = useRef(null)
   const timerRef = useRef(null)
   const seqRef = useRef(0)
+  const onLogEntryRef = useRef(onLogEntry)
+
+  // onLogEntryの最新版を保持
+  useEffect(() => {
+    onLogEntryRef.current = onLogEntry
+  }, [onLogEntry])
 
   // WebSocket接続
   useEffect(() => {
     const h = window.location.hostname || '192.168.4.1'
     const url = `ws://${h}:81/`
 
+    console.log('Connecting to WebSocket:', url)
     setWsStatus('connecting')
     const ws = new WebSocket(url)
     wsRef.current = ws
 
     ws.onopen = () => {
+      console.log('WebSocket connected')
       setWsStatus('open')
     }
 
-    ws.onclose = () => {
+    ws.onclose = (e) => {
+      console.log('WebSocket closed:', e.code, e.reason)
       setWsStatus('closed')
       setIsRunning(false)
       if (timerRef.current) {
@@ -44,6 +53,8 @@ export function useWebSocket(interval, onLogEntry) {
 
     ws.onerror = (e) => {
       console.error('WS error', e)
+      console.error('WebSocket URL:', url)
+      console.error('ReadyState:', ws.readyState)
       setWsStatus('error')
     }
 
@@ -64,8 +75,8 @@ export function useWebSocket(interval, onLogEntry) {
           }))
 
           // ログエントリを親に渡す
-          if (onLogEntry) {
-            onLogEntry({
+          if (onLogEntryRef.current) {
+            onLogEntryRef.current({
               id: msg.id,
               sentTime: msg.t,
               recvTime: now,
@@ -79,12 +90,15 @@ export function useWebSocket(interval, onLogEntry) {
     }
 
     return () => {
+      console.log('Cleaning up WebSocket')
       if (timerRef.current) {
         clearInterval(timerRef.current)
       }
-      ws.close()
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close()
+      }
     }
-  }, [onLogEntry])
+  }, []) // 依存配列を空にして1回だけ実行
 
   const startPing = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
