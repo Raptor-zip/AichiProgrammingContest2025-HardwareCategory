@@ -1,71 +1,69 @@
-# ESP32 WebSocket Ping測定GUI (React版)
+# ESP32 LiDAR Point Cloud Visualization
 
-ESP32とのWebSocket通信でpingの往復時間(RTT)を測定するReactアプリケーションです。
+ESP32とWebSocketを使った2D LiDARデータのリアルタイム可視化システム。Three.jsで3D描画し、Ping測定機能も統合。
 
-## 特徴
+## 機能
 
-- React 18とViteを使用した高速な開発環境
-- カスタムフックでWebSocketロジックを管理
-- コンポーネントベースの設計
-- レスポンシブデザイン
-- リアルタイムな統計情報表示
-- 通信ログの表示(最新200件)
+- **LiDARデータ可視化**: 360°、1度分解能のLiDAR点群をリアルタイム表示
+- **WebSocket通信**: バイナリプロトコルで効率的なデータ転送（10Hz、約14.5KB/秒）
+- **Ping測定**: WebSocket RTT（Round Trip Time）測定機能
+- **3D描画**: Three.jsによる滑らかな3D描画とマウス操作
 
-## セットアップ
+## プロトコル仕様
 
-### 依存関係のインストール
+### LiDARデータ（バイナリ）
+
+```
+[Header: 8 bytes]
+  - type: uint8_t (0x01 = LiDAR data)
+  - reserved: uint8_t (0x00)
+  - point_count: uint16_t (360)
+  - timestamp: uint32_t (milliseconds)
+
+[Data: 360 × 4 bytes]
+  - distance: float32 × 360 points (0°〜359°)
+```
+
+### Pingデータ（JSON）
+
+```json
+{
+  "type": "ping",
+  "id": 123,
+  "t": 1234567890
+}
+```
+
+## 開発
 
 ```bash
+# 依存関係のインストール
 npm install
-```
 
-### 開発サーバーの起動
-
-```bash
+# 開発サーバー起動
 npm run dev
-```
+# → http://localhost:3000/
 
-ブラウザで `http://localhost:3000` を開きます。
-
-### ビルド
-
-```bash
+# プロダクションビルド
 npm run build
+# → dist/app.js, dist/app.css が生成される
 ```
 
-ビルド結果は `dist` フォルダに生成されます。
+## ESP32デプロイ
 
-### プレビュー
+1. `npm run build` でビルド
+2. `dist/app.js` と `dist/app.css` をGitHubにコミット＆プッシュ
+3. ESP32のHTMLが自動的にCDN経由で最新版を読み込む
 
-```bash
-npm run preview
-```
+## 操作方法
 
-## プロジェクト構造
+- **マウスドラッグ**: 視点回転
+- **マウスホイール**: ズーム
+- **Start Ping ボタン**: Ping測定開始/停止
 
-```
-gui/
-├── src/
-│   ├── components/          # Reactコンポーネント
-│   │   ├── ConnectionStatus.jsx
-│   │   ├── ControlPanel.jsx
-│   │   ├── Statistics.jsx
-│   │   └── LogTable.jsx
-│   ├── hooks/              # カスタムフック
-│   │   └── useWebSocket.js
-│   ├── App.jsx             # メインアプリケーション
-│   ├── App.css             # アプリケーションスタイル
-│   ├── main.jsx            # エントリーポイント
-│   └── index.css           # グローバルスタイル
-├── index.html              # HTMLテンプレート
-├── vite.config.js          # Vite設定
-└── package.json            # 依存関係
-```
+## 技術スタック
 
-## 使い方
-
-1. ESP32がWebSocketサーバー(ポート81)を起動していることを確認
-2. アプリケーションを起動すると自動的にWebSocketに接続
-3. 送信間隔を設定(デフォルト: 1000ms)
-4. 「開始」ボタンをクリックしてping測定を開始
-5. 「停止」ボタンで測定を停止
+- React 18
+- Three.js 0.180
+- Vite 5
+- WebSocket (バイナリ + JSON)

@@ -1,6 +1,14 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+
+// 高精度タイムスタンプを返す
+function nowMs() {
+    if (window.performance && typeof performance.now === 'function' && typeof performance.timeOrigin === 'number') {
+        return performance.timeOrigin + performance.now();
+    }
+    return Date.now();
+}
 
 const LidarVisualizer = () => {
     const containerRef = useRef(null);
@@ -8,16 +16,169 @@ const LidarVisualizer = () => {
     const rendererRef = useRef(null);
     const pointsRef = useRef(null);
     const animationIdRef = useRef(null);
+    const wsRef = useRef(null);
+    const pingTimerRef = useRef(null);
+    const pingSeqRef = useRef(0);
+
+    const [wsStatus, setWsStatus] = useState('disconnected');
+    const [frameCount, setFrameCount] = useState(0);
+    const [fps, setFps] = useState(0);
+    const [lastTimestamp, setLastTimestamp] = useState(0);
+    const [pingEnabled, setPingEnabled] = useState(false);
+    const [pingStats, setPingStats] = useState({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
+    const [lastRTT, setLastRTT] = useState(0);
+
+    // WebSocket接続とバイナリデータ受信
+    useEffect(() => {
+        const h = window.location.hostname || '192.168.4.1';
+        const url = `ws://${h}:81/`;
+
+        console.log('Connecting to WebSocket:', url);
+        setWsStatus('connecting');
+        const ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+            console.log('WebSocket connected');
+            setWsStatus('connected');
+        };
+
+        ws.onclose = (e) => {
+            console.log('WebSocket closed:', e.code, e.reason);
+            setWsStatus('disconnected');
+        };
+
+        ws.onerror = (e) => {
+            console.error('WebSocket error:', e);
+            setWsStatus('error');
+        };
+
+        let receivedFrames = 0;
+        let lastFpsUpdate = Date.now();
+
+        ws.onmessage = (event) => {
+            // バイナリデータ(LiDAR)の処理
+            if (event.data instanceof ArrayBuffer) {
+                const buffer = new Uint8Array(event.data);
+
+                const type = buffer[0];
+                const pointCount = new Uint16Array(buffer.buffer, 2, 1)[0];
+                const timestamp = new Uint32Array(buffer.buffer, 4, 1)[0];
+
+                if (type !== 0x01 || pointCount !== 360) {
+                    console.warn('Invalid LiDAR data format');
+                    return;
+                }
+
+                const distances = new Float32Array(buffer.buffer, 8, pointCount);
+
+                if (pointsRef.current) {
+                    const positions = pointsRef.current.geometry.attributes.position.array;
+                    const colors = pointsRef.current.geometry.attributes.color.array;
+
+                    for (let i = 0; i < 360; i++) {
+                        const angle = (i * Math.PI) / 180.0;
+                        const distance = distances[i];
+
+                        positions[i * 3] = Math.cos(angle) * distance;
+                        positions[i * 3 + 1] = 0.0;
+                        positions[i * 3 + 2] = Math.sin(angle) * distance;
+
+                        const normalizedDistance = Math.min(distance / 3.0, 1.0);
+                        colors[i * 3] = normalizedDistance;
+                        colors[i * 3 + 1] = 1 - normalizedDistance;
+                        colors[i * 3 + 2] = 0.5;
+                    }
+
+                    pointsRef.current.geometry.attributes.position.needsUpdate = true;
+                    pointsRef.current.geometry.attributes.color.needsUpdate = true;
+                }
+
+                receivedFrames++;
+                setFrameCount(prev => prev + 1);
+                setLastTimestamp(timestamp);
+
+                const now = Date.now();
+                if (now - lastFpsUpdate >= 1000) {
+                    setFps(receivedFrames);
+                    receivedFrames = 0;
+                    lastFpsUpdate = now;
+                }
+            }
+            // テキストデータ(Ping)の処理
+            else if (typeof event.data === 'string') {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'ping') {
+                        const now = nowMs();
+                        const rtt = now - msg.t;
+                        setLastRTT(rtt);
+
+                        setPingStats(prev => {
+                            const newCount = prev.count + 1;
+                            const newSum = (prev.avg * prev.count) + rtt;
+                            return {
+                                min: Math.min(prev.min, rtt),
+                                max: Math.max(prev.max, rtt),
+                                avg: newSum / newCount,
+                                count: newCount
+                            };
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Invalid JSON from server', e);
+                }
+            }
+        };
+
+        return () => {
+            console.log('Cleaning up WebSocket');
+            if (pingTimerRef.current) {
+                clearInterval(pingTimerRef.current);
+            }
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close();
+            }
+        };
+    }, []);
+
+    // Ping送信機能
+    const togglePing = () => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            alert('WebSocket not connected');
+            return;
+        }
+
+        if (pingEnabled) {
+            // Pingを停止
+            if (pingTimerRef.current) {
+                clearInterval(pingTimerRef.current);
+                pingTimerRef.current = null;
+            }
+            setPingEnabled(false);
+        } else {
+            // Pingを開始
+            pingSeqRef.current = 0;
+            setPingStats({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
+
+            pingTimerRef.current = setInterval(() => {
+                pingSeqRef.current++;
+                const payload = { type: 'ping', id: pingSeqRef.current, t: nowMs() };
+                wsRef.current.send(JSON.stringify(payload));
+            }, 100); // 100ms間隔でPing送信
+
+            setPingEnabled(true);
+        }
+    };
 
     useEffect(() => {
         if (!containerRef.current) return;
 
-        // シーンのセットアップ
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x000000);
         sceneRef.current = scene;
 
-        // カメラのセットアップ
         const camera = new THREE.PerspectiveCamera(
             75,
             containerRef.current.clientWidth / containerRef.current.clientHeight,
@@ -27,31 +188,26 @@ const LidarVisualizer = () => {
         camera.position.set(5, 5, 5);
         camera.lookAt(0, 0, 0);
 
-        // レンダラーのセットアップ
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
         containerRef.current.appendChild(renderer.domElement);
         rendererRef.current = renderer;
 
-        // コントロールのセットアップ
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
 
-        // グリッドヘルパー
         const gridHelper = new THREE.GridHelper(10, 10);
         scene.add(gridHelper);
 
-        // 軸ヘルパー
         const axesHelper = new THREE.AxesHelper(5);
         scene.add(axesHelper);
 
-        // 円盤の追加
         const ringShape = new THREE.Shape();
-        ringShape.absarc(0, 0, 1.5, 0, Math.PI * 2, false); // 外円
+        ringShape.absarc(0, 0, 3.0, 0, Math.PI * 2, false);
         const holePath = new THREE.Path();
-        holePath.absarc(0, 0, 0.5, 0, Math.PI * 2, true); // 内円(穴)
+        holePath.absarc(0, 0, 0.5, 0, Math.PI * 2, true);
         ringShape.holes.push(holePath);
 
         const ringGeometry = new THREE.ShapeGeometry(ringShape);
@@ -59,40 +215,31 @@ const LidarVisualizer = () => {
             color: 0x00ff00,
             side: THREE.DoubleSide,
             transparent: true,
-            opacity: 0.3
+            opacity: 0.2
         });
         const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-        ring.rotation.x = -Math.PI / 2; // XZ平面に配置(水平)
+        ring.rotation.x = -Math.PI / 2;
         scene.add(ring);
 
-        // 点群用のジオメトリとマテリアル
         const geometry = new THREE.BufferGeometry();
-        const positions = new Float32Array(4000 * 3); // 4000点 × (x, y, z)
-        const colors = new Float32Array(4000 * 3); // 4000点 × (r, g, b)
+        const positions = new Float32Array(360 * 3);
+        const colors = new Float32Array(360 * 3);
 
-        // 初期位置と色の設定
-        for (let i = 0; i < 4000; i++) {
+        for (let i = 0; i < 360; i++) {
             positions[i * 3] = 0.0;
             positions[i * 3 + 1] = 0.0;
             positions[i * 3 + 2] = 0.0;
 
-            // 距離に基づいた色付け
-            const distance = Math.sqrt(
-                positions[i * 3] ** 2 +
-                positions[i * 3 + 1] ** 2 +
-                positions[i * 3 + 2] ** 2
-            );
-            const normalizedDistance = distance / 10;
-            colors[i * 3] = normalizedDistance; // R
-            colors[i * 3 + 1] = 1 - normalizedDistance; // G
-            colors[i * 3 + 2] = 0.5; // B
+            colors[i * 3] = 1.0;
+            colors[i * 3 + 1] = 0.0;
+            colors[i * 3 + 2] = 0.5;
         }
 
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
         const material = new THREE.PointsMaterial({
-            size: 0.02,
+            size: 0.05,
             vertexColors: true,
             sizeAttenuation: true
         });
@@ -101,55 +248,6 @@ const LidarVisualizer = () => {
         scene.add(points);
         pointsRef.current = points;
 
-        // パフォーマンス測定用
-        let lastUpdateTime = Date.now();
-        let frameCount = 0;
-        let fps = 0;
-
-        // 10Hzで点群を更新
-        const updateInterval = setInterval(() => {
-            const positions = points.geometry.attributes.position.array;
-            const colors = points.geometry.attributes.color.array;
-
-            // LiDARデータをシミュレート
-            const time = 1;
-            for (let i = 0; i < 4000; i++) {
-                const angle = (i / 4000) * Math.PI * 2;
-                const radius = 0.5 + Math.random() * 1;
-
-                positions[i * 3] = Math.cos(angle + time * 0.5) * radius;
-                //   positions[i * 3] = 0.0;
-                positions[i * 3 + 1] = 0.0;
-                positions[i * 3 + 2] = Math.sin(angle + time * 0.5) * radius;
-                //   positions[i * 3 + 2] = 0.0;
-
-                // 距離に基づいた色更新
-                const distance = Math.sqrt(
-                    positions[i * 3] ** 2 +
-                    positions[i * 3 + 1] ** 2 +
-                    positions[i * 3 + 2] ** 2
-                );
-                const normalizedDistance = distance / 8;
-                colors[i * 3] = normalizedDistance;
-                colors[i * 3 + 1] = 1 - normalizedDistance;
-                colors[i * 3 + 2] = 0.5 + Math.sin(time) * 0.5;
-            }
-
-            points.geometry.attributes.position.needsUpdate = true;
-            points.geometry.attributes.color.needsUpdate = true;
-
-            // FPS計算
-            frameCount++;
-            const now = Date.now();
-            if (now - lastUpdateTime >= 1000) {
-                fps = frameCount;
-                frameCount = 0;
-                lastUpdateTime = now;
-                console.log(`Update Rate: 10Hz, Render FPS: ${fps}`);
-            }
-        }, 100); // 100ms = 10Hz
-
-        // アニメーションループ
         const animate = () => {
             animationIdRef.current = requestAnimationFrame(animate);
             controls.update();
@@ -157,7 +255,6 @@ const LidarVisualizer = () => {
         };
         animate();
 
-        // ウィンドウリサイズ対応
         const handleResize = () => {
             if (!containerRef.current) return;
             camera.aspect = containerRef.current.clientWidth / containerRef.current.clientHeight;
@@ -166,10 +263,8 @@ const LidarVisualizer = () => {
         };
         window.addEventListener('resize', handleResize);
 
-        // クリーンアップ
         return () => {
             window.removeEventListener('resize', handleResize);
-            clearInterval(updateInterval);
             if (animationIdRef.current) {
                 cancelAnimationFrame(animationIdRef.current);
             }
@@ -201,13 +296,49 @@ const LidarVisualizer = () => {
                     background: 'rgba(0, 0, 0, 0.7)',
                     padding: '10px',
                     borderRadius: '5px',
-                    fontFamily: 'monospace'
+                    fontFamily: 'monospace',
+                    fontSize: '14px'
                 }}
             >
-                <div>LiDAR Point Cloud Visualization</div>
-                <div>Points: 4000</div>
-                <div>Update Rate: 10Hz</div>
-                <div>Controls: Mouse to rotate, scroll to zoom</div>
+                <div style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '8px' }}>
+                    🎯 LiDAR Point Cloud Visualization
+                </div>
+                <div>WebSocket: <span style={{ color: wsStatus === 'connected' ? '#0f0' : '#f00' }}>{wsStatus}</span></div>
+                <div>Points: 360 (1° resolution)</div>
+                <div>Update Rate: {fps} Hz</div>
+                <div>Frame Count: {frameCount}</div>
+                <div>Timestamp: {lastTimestamp} ms</div>
+
+                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
+                    <button
+                        onClick={togglePing}
+                        style={{
+                            padding: '5px 10px',
+                            backgroundColor: pingEnabled ? '#f44' : '#4f4',
+                            color: '#000',
+                            border: 'none',
+                            borderRadius: '3px',
+                            cursor: 'pointer',
+                            fontWeight: 'bold',
+                            fontSize: '12px'
+                        }}
+                    >
+                        {pingEnabled ? '⏸ Stop Ping' : '▶ Start Ping'}
+                    </button>
+                    {pingEnabled && (
+                        <div style={{ marginTop: '8px' }}>
+                            <div>RTT: {lastRTT.toFixed(2)} ms</div>
+                            <div>Min: {pingStats.min === Infinity ? '-' : pingStats.min.toFixed(2)} ms</div>
+                            <div>Max: {pingStats.max === -Infinity ? '-' : pingStats.max.toFixed(2)} ms</div>
+                            <div>Avg: {pingStats.count > 0 ? pingStats.avg.toFixed(2) : '-'} ms</div>
+                            <div>Count: {pingStats.count}</div>
+                        </div>
+                    )}
+                </div>
+
+                <div style={{ marginTop: '10px', fontSize: '12px', opacity: 0.8 }}>
+                    Controls: Mouse to rotate, scroll to zoom
+                </div>
             </div>
         </div>
     );

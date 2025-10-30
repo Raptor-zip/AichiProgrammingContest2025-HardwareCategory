@@ -1,19 +1,86 @@
-// ESP32 Ping-Pong WebSocket + HTTP server example
+// ESP32 LiDAR WebSocket Binary Stream
 // - HTTP server on port 80 serves the webpage
-// - WebSocket server on port 81 echoes whatever it receives (ping -> pong echo)
-// - Browser sends {"type":"ping","id":N,"t":<ms since epoch>} and measures RTT
+// - WebSocket server on port 81 sends binary LiDAR data at 10Hz
+// - LiDAR data: 360 points (1 degree resolution), distance only
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h> // https://github.com/Links2004/arduinoWebSockets
 
 // ----- 設定 -----
-// STA（既存のWi‑Fi）に接続して動作させる（ここを書き換えてください）
 const char *wifi_ssid = "raptor";
 const char *wifi_pass = "12345678";
 
 WebServer httpServer(80);
 WebSocketsServer wsServer(81);
+
+// LiDARデータ送信用
+#define LIDAR_POINTS 360
+#define LIDAR_UPDATE_HZ 10
+#define LIDAR_UPDATE_INTERVAL_MS (1000 / LIDAR_UPDATE_HZ)
+
+unsigned long lastLidarSendTime = 0;
+uint32_t lidarFrameCount = 0;
+
+// バイナリLiDARデータを生成して送信
+// フォーマット:
+// [Header: 8 bytes]
+//   - type: uint8_t (0x01 = LiDAR data)
+//   - reserved: uint8_t (0x00)
+//   - point_count: uint16_t (360)
+//   - timestamp: uint32_t (milliseconds)
+// [Data: 360 × 4 bytes]
+//   - distance: float (meters) × 360 points
+void generateAndSendLidarData(uint8_t client_num)
+{
+    const size_t headerSize = 8;
+    const size_t dataSize = LIDAR_POINTS * sizeof(float);
+    const size_t totalSize = headerSize + dataSize;
+
+    uint8_t *buffer = (uint8_t *)malloc(totalSize);
+    if (!buffer) {
+        Serial.println("[ERROR] Failed to allocate buffer for LiDAR data");
+        return;
+    }
+
+    // ヘッダー構築
+    buffer[0] = 0x01; // type: LiDAR data
+    buffer[1] = 0x00; // reserved
+    uint16_t pointCount = LIDAR_POINTS;
+    memcpy(&buffer[2], &pointCount, sizeof(uint16_t));
+    uint32_t timestamp = millis();
+    memcpy(&buffer[4], &timestamp, sizeof(uint32_t));
+
+    // サンプルLiDARデータ生成 (360度分)
+    float *distances = (float *)(&buffer[headerSize]);
+    float time = millis() / 1000.0f;
+
+    for (int i = 0; i < LIDAR_POINTS; i++) {
+        float angle = (i * PI) / 180.0f; // 度をラジアンに変換
+
+        // 動的な円パターンを生成（シミュレーション用）
+        float baseRadius = 1.5f + 0.5f * sin(time * 2.0f);
+        float noise = 0.1f * sin(angle * 5.0f + time * 3.0f);
+        float distance = baseRadius + noise;
+
+        // ランダムな障害物を追加
+        if ((i >= 45 && i <= 135) || (i >= 225 && i <= 315)) {
+            distance *= 0.6f + 0.2f * sin(time * 4.0f);
+        }
+
+        distances[i] = distance;
+    }
+
+    // バイナリデータをWebSocketで送信
+    wsServer.sendBIN(client_num, buffer, totalSize);
+
+    free(buffer);
+    lidarFrameCount++;
+
+    if (lidarFrameCount % 10 == 0) {
+        Serial.printf("[LiDAR] Sent frame %u to client %u\n", lidarFrameCount, client_num);
+    }
+}
 
 // HTML ページ（React版 — CSS/JSはCDNから読み込み）
 const char index_html[] PROGMEM = R"rawliteral(
@@ -21,7 +88,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 <html lang="ja">
 <head>
     <meta charset="utf-8">
-    <title>ESP32 WebSocket Ping測定</title>
+    <title>ESP32 LiDAR Visualization</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/Raptor-zip/AichiProgrammingContest2025-HardwareCategory@main/gui/dist/app.css">
 </head>
@@ -43,14 +110,15 @@ void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t lengt
     {
         IPAddress ip = wsServer.remoteIP(client_num);
         Serial.printf("[WS] Client %u connected from %s\n", client_num, ip.toString().c_str());
+        // 接続時に即座に1フレーム送信
+        generateAndSendLidarData(client_num);
         break;
     }
     case WStype_TEXT:
     {
-        // 受けたテキストをそのまま送り返す（エコー）
-        // payload は null 終端されているはず
+        // Pingメッセージをエコーバック
         Serial.printf("[WS] recv from %u: %s\n", client_num, (char *)payload);
-        wsServer.sendTXT(client_num, payload, length); // エコー -> ブラウザが RTT を計算する
+        wsServer.sendTXT(client_num, payload, length); // Pingエコー
         break;
     }
     default:
@@ -109,6 +177,19 @@ void loop()
 {
     wsServer.loop();
     httpServer.handleClient();
-    // 小休止
+
+    // 10HzでLiDARデータを送信
+    unsigned long currentTime = millis();
+    if (currentTime - lastLidarSendTime >= LIDAR_UPDATE_INTERVAL_MS) {
+        lastLidarSendTime = currentTime;
+
+        // 接続中の全クライアントにLiDARデータを送信
+        for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
+            if (wsServer.clientIsConnected(i)) {
+                generateAndSendLidarData(i);
+            }
+        }
+    }
+
     delay(1);
 }

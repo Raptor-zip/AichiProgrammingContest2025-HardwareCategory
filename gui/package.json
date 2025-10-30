@@ -1,13 +1,12 @@
 {
-  "name": "esp32-websocket-ping-gui",
-  "version": "1.0.0",
-  "description": "ESP32 WebSocket Ping測定GUI (React版)",
+  "name": "esp32-lidar-visualization",
+  "version": "2.0.0",
+  "description": "ESP32 LiDAR Point Cloud Visualization with WebSocket",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "lidar-test": "vite lidar-test.html"
+    "preview": "vite preview"
   },
   "dependencies": {
     "react": "^18.2.0",
