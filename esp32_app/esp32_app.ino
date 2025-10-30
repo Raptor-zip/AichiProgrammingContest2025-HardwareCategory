@@ -22,6 +22,10 @@ WebSocketsServer wsServer(81);
 unsigned long lastLidarSendTime = 0;
 uint32_t lidarFrameCount = 0;
 
+// 波形パターン制御
+int currentPattern = 0; // 0: デフォルト, 1: 正方形, 2: 三角形, 3: ランダム
+unsigned long lastPatternChangeTime = 0;
+
 // バイナリLiDARデータを生成して送信
 // フォーマット:
 // [Header: 8 bytes]
@@ -57,15 +61,49 @@ void generateAndSendLidarData(uint8_t client_num)
 
     for (int i = 0; i < LIDAR_POINTS; i++) {
         float angle = (i * PI) / 180.0f; // 度をラジアンに変換
+        float distance = 0.0f;
 
-        // 動的な円パターンを生成（シミュレーション用）
-        float baseRadius = 1.5f + 0.5f * sin(time * 2.0f);
-        float noise = 0.1f * sin(angle * 5.0f + time * 3.0f);
-        float distance = baseRadius + noise;
+        switch (currentPattern) {
+            case 0: // デフォルト: 動的な円パターン
+            {
+                float baseRadius = 1.5f + 0.5f * sin(time * 2.0f);
+                float noise = 0.1f * sin(angle * 5.0f + time * 3.0f);
+                distance = baseRadius + noise;
 
-        // ランダムな障害物を追加
-        if ((i >= 45 && i <= 135) || (i >= 225 && i <= 315)) {
-            distance *= 0.6f + 0.2f * sin(time * 4.0f);
+                // ランダムな障害物を追加
+                if ((i >= 45 && i <= 135) || (i >= 225 && i <= 315)) {
+                    distance *= 0.6f + 0.2f * sin(time * 4.0f);
+                }
+                break;
+            }
+            case 1: // 正方形パターン
+            {
+                if ((i >= 0 && i <= 45) || (i >= 135 && i <= 225) || (i >= 315 && i <= 360)) {
+                    distance = 2.0f;
+                } else {
+                    distance = 1.0f;
+                }
+                break;
+            }
+            case 2: // 三角形パターン
+            {
+                if (i < 120) {
+                    distance = 0.5f + (i / 120.0f) * 2.0f;
+                } else if (i < 240) {
+                    distance = 2.5f - ((i - 120) / 120.0f) * 2.0f;
+                } else {
+                    distance = 0.5f + ((i - 240) / 120.0f) * 2.0f;
+                }
+                break;
+            }
+            case 3: // ランダムパターン
+            {
+                distance = 0.5f + (random(0, 1000) / 1000.0f) * 2.5f;
+                break;
+            }
+            default:
+                distance = 1.5f;
+                break;
         }
 
         distances[i] = distance;
@@ -171,12 +209,54 @@ void setup()
     wsServer.begin();
     wsServer.onEvent(onWsEvent);
     Serial.println("WebSocket server started on port 81");
+
+    // パターン制御ヘルプ表示
+    Serial.println("\n=== LiDAR Pattern Control ===");
+    Serial.println("0: Default dynamic circle");
+    Serial.println("1: Square pattern");
+    Serial.println("2: Triangle pattern");
+    Serial.println("3: Random pattern");
+    Serial.println("h: Show help");
+    Serial.println("============================\n");
 }
 
 void loop()
 {
     wsServer.loop();
     httpServer.handleClient();
+
+    // シリアル入力チェック（波形パターン切り替え）
+    if (Serial.available() > 0) {
+        char key = Serial.read();
+        switch (key) {
+            case '0':
+                currentPattern = 0;
+                Serial.println("[Pattern] 0: Default dynamic circle");
+                break;
+            case '1':
+                currentPattern = 1;
+                Serial.println("[Pattern] 1: Square");
+                break;
+            case '2':
+                currentPattern = 2;
+                Serial.println("[Pattern] 2: Triangle");
+                break;
+            case '3':
+                currentPattern = 3;
+                Serial.println("[Pattern] 3: Random");
+                break;
+            case 'h':
+            case 'H':
+                Serial.println("\n=== LiDAR Pattern Control ===");
+                Serial.println("0: Default dynamic circle");
+                Serial.println("1: Square pattern");
+                Serial.println("2: Triangle pattern");
+                Serial.println("3: Random pattern");
+                Serial.println("h: Show this help");
+                Serial.println("============================\n");
+                break;
+        }
+    }
 
     // 10HzでLiDARデータを送信
     unsigned long currentTime = millis();

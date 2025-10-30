@@ -42,6 +42,20 @@ const LidarVisualizer = () => {
         ws.onopen = () => {
             console.log('WebSocket connected');
             setWsStatus('connected');
+
+            // 接続後、自動的にPing送信開始（1秒間隔）
+            pingSeqRef.current = 0;
+            setPingStats({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
+
+            pingTimerRef.current = setInterval(() => {
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    pingSeqRef.current++;
+                    const payload = { type: 'ping', id: pingSeqRef.current, t: nowMs() };
+                    wsRef.current.send(JSON.stringify(payload));
+                }
+            }, 1000); // 1秒間隔でPing送信
+
+            setPingEnabled(true);
         };
 
         ws.onclose = (e) => {
@@ -142,35 +156,6 @@ const LidarVisualizer = () => {
             }
         };
     }, []);
-
-    // Ping送信機能
-    const togglePing = () => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-            alert('WebSocket not connected');
-            return;
-        }
-
-        if (pingEnabled) {
-            // Pingを停止
-            if (pingTimerRef.current) {
-                clearInterval(pingTimerRef.current);
-                pingTimerRef.current = null;
-            }
-            setPingEnabled(false);
-        } else {
-            // Pingを開始
-            pingSeqRef.current = 0;
-            setPingStats({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
-
-            pingTimerRef.current = setInterval(() => {
-                pingSeqRef.current++;
-                const payload = { type: 'ping', id: pingSeqRef.current, t: nowMs() };
-                wsRef.current.send(JSON.stringify(payload));
-            }, 100); // 100ms間隔でPing送信
-
-            setPingEnabled(true);
-        }
-    };
 
     useEffect(() => {
         if (!containerRef.current) return;
@@ -310,30 +295,14 @@ const LidarVisualizer = () => {
                 <div>Timestamp: {lastTimestamp} ms</div>
 
                 <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
-                    <button
-                        onClick={togglePing}
-                        style={{
-                            padding: '5px 10px',
-                            backgroundColor: pingEnabled ? '#f44' : '#4f4',
-                            color: '#000',
-                            border: 'none',
-                            borderRadius: '3px',
-                            cursor: 'pointer',
-                            fontWeight: 'bold',
-                            fontSize: '12px'
-                        }}
-                    >
-                        {pingEnabled ? '⏸ Stop Ping' : '▶ Start Ping'}
-                    </button>
-                    {pingEnabled && (
-                        <div style={{ marginTop: '8px' }}>
-                            <div>RTT: {lastRTT.toFixed(2)} ms</div>
-                            <div>Min: {pingStats.min === Infinity ? '-' : pingStats.min.toFixed(2)} ms</div>
-                            <div>Max: {pingStats.max === -Infinity ? '-' : pingStats.max.toFixed(2)} ms</div>
-                            <div>Avg: {pingStats.count > 0 ? pingStats.avg.toFixed(2) : '-'} ms</div>
-                            <div>Count: {pingStats.count}</div>
-                        </div>
-                    )}
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '5px' }}>
+                        📡 WebSocket Ping (Auto)
+                    </div>
+                    <div>RTT: {lastRTT.toFixed(2)} ms</div>
+                    <div>Min: {pingStats.min === Infinity ? '-' : pingStats.min.toFixed(2)} ms</div>
+                    <div>Max: {pingStats.max === -Infinity ? '-' : pingStats.max.toFixed(2)} ms</div>
+                    <div>Avg: {pingStats.count > 0 ? pingStats.avg.toFixed(2) : '-'} ms</div>
+                    <div>Count: {pingStats.count}</div>
                 </div>
 
                 <div style={{ marginTop: '10px', fontSize: '12px', opacity: 0.8 }}>
