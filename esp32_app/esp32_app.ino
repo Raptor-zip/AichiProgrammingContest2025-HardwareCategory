@@ -5,7 +5,8 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
-#include <WebSocketsServer.h> // https://github.com/Links2004/arduinoWebSockets
+#include <WebSocketsServer.h>  // https://github.com/Links2004/arduinoWebSockets
+#include "LD06.h"
 
 // ----- 設定 -----
 const char *wifi_ssid = "raptor";
@@ -15,112 +16,20 @@ WebServer httpServer(80);
 WebSocketsServer wsServer(81);
 
 // LiDARデータ送信用
-#define LIDAR_POINTS 360
-#define LIDAR_UPDATE_HZ 10
-#define LIDAR_UPDATE_INTERVAL_MS (1000 / LIDAR_UPDATE_HZ)
+#define LIDAR_NUM_POINTS 360
+#define LIDAR_DATA_HEADER_SIZE 8
+#define LIDAR_DATA_BUF_SIZE (LIDAR_DATA_HEADER_SIZE + LIDAR_NUM_POINTS * sizeof(float))
+#define LIDAR_DISTANCES ((float *)(lidarDataBuf + LIDAR_DATA_HEADER_SIZE))
 
-unsigned long lastLidarSendTime = 0;
-uint32_t lidarFrameCount = 0;
+uint8_t lidarDataBuf[LIDAR_DATA_BUF_SIZE] = { 0 };
 
-// 波形パターン制御
-int currentPattern = 0; // 0: デフォルト, 1: 正方形, 2: 三角形, 3: ランダム
-unsigned long lastPatternChangeTime = 0;
+// LD06構造体
+LD06 ld06;
 
-// バイナリLiDARデータを生成して送信
-// フォーマット:
-// [Header: 8 bytes]
-//   - type: uint8_t (0x01 = LiDAR data)
-//   - reserved: uint8_t (0x00)
-//   - point_count: uint16_t (360)
-//   - timestamp: uint32_t (milliseconds)
-// [Data: 360 × 4 bytes]
-//   - distance: float (meters) × 360 points
-void generateAndSendLidarData(uint8_t client_num)
-{
-    const size_t headerSize = 8;
-    const size_t dataSize = LIDAR_POINTS * sizeof(float);
-    const size_t totalSize = headerSize + dataSize;
+void LD06_onReceived(LD06 *lidar);
+void sendLidarData();
 
-    uint8_t *buffer = (uint8_t *)malloc(totalSize);
-    if (!buffer) {
-        Serial.println("[ERROR] Failed to allocate buffer for LiDAR data");
-        return;
-    }
-
-    // ヘッダー構築
-    buffer[0] = 0x01; // type: LiDAR data
-    buffer[1] = 0x00; // reserved
-    uint16_t pointCount = LIDAR_POINTS;
-    memcpy(&buffer[2], &pointCount, sizeof(uint16_t));
-    uint32_t timestamp = millis();
-    memcpy(&buffer[4], &timestamp, sizeof(uint32_t));
-
-    // サンプルLiDARデータ生成 (360度分)
-    float *distances = (float *)(&buffer[headerSize]);
-    float time = millis() / 1000.0f;
-
-    for (int i = 0; i < LIDAR_POINTS; i++) {
-        float angle = (i * PI) / 180.0f; // 度をラジアンに変換
-        float distance = 0.0f;
-
-        switch (currentPattern) {
-            case 0: // デフォルト: 動的な円パターン
-            {
-                float baseRadius = 1.5f + 0.5f * sin(time * 2.0f);
-                float noise = 0.1f * sin(angle * 5.0f + time * 3.0f);
-                distance = baseRadius + noise;
-
-                // ランダムな障害物を追加
-                if ((i >= 45 && i <= 135) || (i >= 225 && i <= 315)) {
-                    distance *= 0.6f + 0.2f * sin(time * 4.0f);
-                }
-                break;
-            }
-            case 1: // 正方形パターン
-            {
-                if ((i >= 0 && i <= 45) || (i >= 135 && i <= 225) || (i >= 315 && i <= 360)) {
-                    distance = 2.0f;
-                } else {
-                    distance = 1.0f;
-                }
-                break;
-            }
-            case 2: // 三角形パターン
-            {
-                if (i < 120) {
-                    distance = 0.5f + (i / 120.0f) * 2.0f;
-                } else if (i < 240) {
-                    distance = 2.5f - ((i - 120) / 120.0f) * 2.0f;
-                } else {
-                    distance = 0.5f + ((i - 240) / 120.0f) * 2.0f;
-                }
-                break;
-            }
-            case 3: // ランダムパターン
-            {
-                distance = 0.5f + (random(0, 1000) / 1000.0f) * 2.5f;
-                break;
-            }
-            default:
-                distance = 1.5f;
-                break;
-        }
-
-        distances[i] = distance;
-    }
-
-    // バイナリデータをWebSocketで送信
-    wsServer.sendBIN(client_num, buffer, totalSize);
-
-    free(buffer);
-    lidarFrameCount++;
-
-    if (lidarFrameCount % 10 == 0) {
-        Serial.printf("[LiDAR] Sent frame %u to client %u\n", lidarFrameCount, client_num);
-    }
-}
-
-// HTML ページ（React版 — CSS/JSはCDNから読み込み）
+// HTML ページ
 const char index_html[] PROGMEM = R"rawliteral(
 <!doctype html>
 <html lang="ja">
@@ -137,139 +46,141 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t length)
-{
-    switch (type)
-    {
+void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
     case WStype_DISCONNECTED:
-        Serial.printf("[WS] Client %u disconnected\n", client_num);
-        break;
+      Serial.printf("[WS] Client %u disconnected\n", client_num);
+      break;
     case WStype_CONNECTED:
-    {
+      {
         IPAddress ip = wsServer.remoteIP(client_num);
         Serial.printf("[WS] Client %u connected from %s\n", client_num, ip.toString().c_str());
-        // 接続時に即座に1フレーム送信
-        generateAndSendLidarData(client_num);
         break;
-    }
+      }
     case WStype_TEXT:
-    {
+      {
         // Pingメッセージをエコーバック
         Serial.printf("[WS] recv from %u: %s\n", client_num, (char *)payload);
-        wsServer.sendTXT(client_num, payload, length); // Pingエコー
+        wsServer.sendTXT(client_num, payload, length);  // Pingエコー
         break;
-    }
+      }
     default:
-        break;
-    }
+      break;
+  }
 }
 
-void handleRoot()
-{
-    httpServer.sendHeader("Content-Type", "text/html; charset=utf-8");
-    httpServer.send(200, "text/html", index_html);
+void handleRoot() {
+  httpServer.sendHeader("Content-Type", "text/html; charset=utf-8");
+  httpServer.send(200, "text/html", index_html);
 }
 
-void setup()
-{
-    Serial.begin(921600);
-    delay(100);
+void setup() {
+  Serial.begin(921600);
+  Serial2.begin(230400, SERIAL_8N1, 25, 26);
+  LD06_init(&ld06, LD06_onReceived);
+  delay(100);
 
-    Serial.println();
-    // STA のみで動かす -> 既存Wi-Fiに接続を試みる
-    Serial.printf("Connecting to WiFi '%s'\n", wifi_ssid);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(wifi_ssid, wifi_pass);
-    unsigned long start = millis();
-    Serial.print("Connecting");
-    // 最大30秒待つ
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
-        Serial.print('.');
-        delay(500);
+  Serial.println();
+  // STA のみで動かす -> 既存Wi-Fiに接続を試みる
+  Serial.printf("Connecting to WiFi '%s'\n", wifi_ssid);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifi_ssid, wifi_pass);
+  unsigned long start = millis();
+  Serial.print("Connecting");
+  // 最大30秒待つ
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
+    Serial.print('.');
+    delay(500);
+  }
+  Serial.println();
+  if (WiFi.status() == WL_CONNECTED) {
+    IPAddress myIP = WiFi.localIP();
+    Serial.print("Connected. IP address: ");
+    Serial.println(myIP);
+  } else {
+    // STA のみ => 失敗したら先に進まず停止して原因を直す
+    Serial.println("Failed to connect to WiFi (STA-only). Halting.");
+    while (true) {
+      delay(1000);
     }
-    Serial.println();
-    if (WiFi.status() == WL_CONNECTED) {
-        IPAddress myIP = WiFi.localIP();
-        Serial.print("Connected. IP address: ");
-        Serial.println(myIP);
-    } else {
-        // STA のみ => 失敗したら先に進まず停止して原因を直す
-        Serial.println("Failed to connect to WiFi (STA-only). Halting.");
-        while (true) {
-            delay(1000);
-        }
-    }
+  }
 
-    // HTTP
-    httpServer.on("/", handleRoot);
-    httpServer.begin();
-    Serial.println("HTTP server started on port 80");
+  // HTTP
+  httpServer.on("/", handleRoot);
+  httpServer.begin();
+  Serial.println("HTTP server started on port 80");
 
-    // WebSocket
-    wsServer.begin();
-    wsServer.onEvent(onWsEvent);
-    Serial.println("WebSocket server started on port 81");
-
-    // パターン制御ヘルプ表示
-    Serial.println("\n=== LiDAR Pattern Control ===");
-    Serial.println("0: Default dynamic circle");
-    Serial.println("1: Square pattern");
-    Serial.println("2: Triangle pattern");
-    Serial.println("3: Random pattern");
-    Serial.println("h: Show help");
-    Serial.println("============================\n");
+  // WebSocket
+  wsServer.begin();
+  wsServer.onEvent(onWsEvent);
+  Serial.println("WebSocket server started on port 81");
 }
 
-void loop()
-{
+void loop() {
+  static uint32_t lastServerControlTime = 0;
+
+  uint32_t currentTime = millis();
+
+  // LD06受信
+  if (Serial2.available() > 0) {
+    LD06_rxTask(&ld06, Serial2.read());
+  }
+
+  // サーバー制御(1kHz)
+  if (currentTime >= lastServerControlTime + 1) {
     wsServer.loop();
     httpServer.handleClient();
+    lastServerControlTime = currentTime;
+  }
+}
 
-    // シリアル入力チェック（波形パターン切り替え）
-    if (Serial.available() > 0) {
-        char key = Serial.read();
-        switch (key) {
-            case '0':
-                currentPattern = 0;
-                Serial.println("[Pattern] 0: Default dynamic circle");
-                break;
-            case '1':
-                currentPattern = 1;
-                Serial.println("[Pattern] 1: Square");
-                break;
-            case '2':
-                currentPattern = 2;
-                Serial.println("[Pattern] 2: Triangle");
-                break;
-            case '3':
-                currentPattern = 3;
-                Serial.println("[Pattern] 3: Random");
-                break;
-            case 'h':
-            case 'H':
-                Serial.println("\n=== LiDAR Pattern Control ===");
-                Serial.println("0: Default dynamic circle");
-                Serial.println("1: Square pattern");
-                Serial.println("2: Triangle pattern");
-                Serial.println("3: Random pattern");
-                Serial.println("h: Show this help");
-                Serial.println("============================\n");
-                break;
-        }
+void LD06_onReceived(LD06 *lidar) {
+  static int16_t lastDegree = -1;
+
+  Serial.println("[LiDAR] Frame received");
+
+  for (size_t i = 0; i < LD06_NUM_POINTS; i++) {
+    float angle = lidar->angle[i];
+    float distance = lidar->distance[i];
+
+    int16_t degree = (int16_t)(angle / M_PI_F * 180.0f + 360.0f) % 360;
+
+    // 周回検出
+    if (degree < lastDegree) {
+      sendLidarData();
     }
 
-    // 10HzでLiDARデータを送信
-    unsigned long currentTime = millis();
-    if (currentTime - lastLidarSendTime >= LIDAR_UPDATE_INTERVAL_MS) {
-        lastLidarSendTime = currentTime;
+    LIDAR_DISTANCES[degree] = distance;
 
-        // 接続中の全クライアントにLiDARデータを送信
-        for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
-            if (wsServer.clientIsConnected(i)) {
-                generateAndSendLidarData(i);
-            }
-        }
+    lastDegree = degree;
+  }
+}
+
+// バイナリLiDARデータを生成して送信
+// フォーマット:
+// [Header: 8 bytes]
+//   - type: uint8_t (0x01 = LiDAR data)
+//   - reserved: uint8_t (0x00)
+//   - point_count: uint16_t (360)
+//   - timestamp: uint32_t (milliseconds)
+// [Data: 360 × 4 bytes]
+//   - distance: float (meters) × 360 points
+void sendLidarData() {
+  static uint32_t lidarFrameCount = 0;
+
+  // ヘッダー構築
+  lidarDataBuf[0] = 0x01;  // type: LiDAR Data
+  lidarDataBuf[1] = 0x00;  // reserved
+  *((uint16_t *)(&lidarDataBuf[2])) = LIDAR_NUM_POINTS;
+  *((uint32_t *)(&lidarDataBuf[4])) = millis();
+
+  // バイナリデータをWebSocketで送信
+  for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
+    if (wsServer.clientIsConnected(i)) {
+      wsServer.sendBIN(i, lidarDataBuf, LIDAR_DATA_BUF_SIZE);
     }
+  }
 
-    delay(1);
+  lidarFrameCount++;
+  Serial.printf("[LiDAR] Sent frame %u\n", lidarFrameCount);
 }
