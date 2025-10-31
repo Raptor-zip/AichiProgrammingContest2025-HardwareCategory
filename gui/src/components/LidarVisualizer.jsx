@@ -531,6 +531,50 @@ const LidarVisualizer = () => {
         const h = window.location.hostname || '192.168.4.1';
         const url = `ws://${h}:81/`;
 
+        // WebSocket切断時の共通処理
+        const cleanupWebSocketTimers = () => {
+            // すべてのタイマーをクリア
+            if (pingTimerRef.current) {
+                clearInterval(pingTimerRef.current);
+                pingTimerRef.current = null;
+            }
+            if (pingTimeoutRef.current) {
+                clearTimeout(pingTimeoutRef.current);
+                pingTimeoutRef.current = null;
+            }
+            if (dataTimeoutRef.current) {
+                clearInterval(dataTimeoutRef.current);
+                dataTimeoutRef.current = null;
+            }
+            if (connectionCheckTimerRef.current) {
+                clearInterval(connectionCheckTimerRef.current);
+                connectionCheckTimerRef.current = null;
+            }
+        };
+
+        // WebSocket強制切断（再接続トリガー）
+        const forceReconnect = (reason) => {
+            console.warn(`${reason}. Forcing reconnection...`);
+
+            // すべての音を停止
+            if (synthRef.current) {
+                synthRef.current.stopAll();
+            }
+            activeNotesRef.current.clear();
+            setCurrentNotes([]);
+
+            // 状態を更新
+            setWsStatus('disconnected');
+
+            // タイマーをクリア
+            cleanupWebSocketTimers();
+
+            // WebSocketを閉じる（これがoncloseイベントをトリガー）
+            if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED && wsRef.current.readyState !== WebSocket.CLOSING) {
+                wsRef.current.close();
+            }
+        };
+
         // WebSocket接続関数
         const connectWebSocket = () => {
             console.log(`Connecting to WebSocket: ${url} (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})`);
@@ -562,10 +606,7 @@ const LidarVisualizer = () => {
                             clearTimeout(pingTimeoutRef.current);
                         }
                         pingTimeoutRef.current = setTimeout(() => {
-                            console.warn('Ping timeout (5000ms) - No response from server. Reconnecting...');
-                            if (wsRef.current) {
-                                wsRef.current.close();
-                            }
+                            forceReconnect('Ping timeout (5000ms) - No response from server');
                         }, 5000);
                     }
                 }, 1000); // 1秒間隔でPing送信
@@ -579,10 +620,7 @@ const LidarVisualizer = () => {
                     const timeSinceLastData = now - lastDataReceivedRef.current;
 
                     if (timeSinceLastData > dataTimeoutDuration) {
-                        console.warn(`No LiDAR data received for ${timeSinceLastData}ms. Reconnecting...`);
-                        if (wsRef.current) {
-                            wsRef.current.close();
-                        }
+                        forceReconnect(`No LiDAR data received for ${timeSinceLastData}ms`);
                     }
                 }, 2000); // 2秒ごとにチェック
 
@@ -594,13 +632,7 @@ const LidarVisualizer = () => {
                     if (wsRef.current) {
                         const state = wsRef.current.readyState;
                         if (state === WebSocket.CLOSING || state === WebSocket.CLOSED) {
-                            console.warn('WebSocket state is CLOSING/CLOSED. Triggering reconnect...');
-                            clearInterval(connectionCheckTimerRef.current);
-                            connectionCheckTimerRef.current = null;
-                            // onclose が自動的に呼ばれるはずだが、念のため明示的にclose
-                            if (state === WebSocket.CLOSING) {
-                                wsRef.current.close();
-                            }
+                            forceReconnect('WebSocket state is CLOSING/CLOSED');
                         }
                     }
                 }, 3000); // 3秒ごとにチェック
@@ -612,29 +644,22 @@ const LidarVisualizer = () => {
                 console.log('WebSocket closed:', e.code, e.reason);
                 setWsStatus('disconnected');
 
-                // すべてのタイマーをクリア
-                if (pingTimerRef.current) {
-                    clearInterval(pingTimerRef.current);
-                    pingTimerRef.current = null;
+                // タイマーをクリア
+                cleanupWebSocketTimers();
+
+                // すべての音を停止
+                if (synthRef.current) {
+                    synthRef.current.stopAll();
                 }
-                if (pingTimeoutRef.current) {
-                    clearTimeout(pingTimeoutRef.current);
-                    pingTimeoutRef.current = null;
-                }
-                if (dataTimeoutRef.current) {
-                    clearInterval(dataTimeoutRef.current);
-                    dataTimeoutRef.current = null;
-                }
-                if (connectionCheckTimerRef.current) {
-                    clearInterval(connectionCheckTimerRef.current);
-                    connectionCheckTimerRef.current = null;
-                }
+                activeNotesRef.current.clear();
+                setCurrentNotes([]);
 
                 // 再接続を試みる
                 reconnectAttemptsRef.current++;
                 if (reconnectAttemptsRef.current < maxReconnectAttempts) {
                     const delay = Math.min(1000 * reconnectAttemptsRef.current, 5000); // 1秒、2秒、3秒、4秒、5秒...最大5秒
                     console.log(`Reconnecting in ${delay}ms... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
+                    setWsStatus('connecting');
                     reconnectTimerRef.current = setTimeout(() => {
                         connectWebSocket();
                     }, delay);
@@ -910,31 +935,14 @@ const LidarVisualizer = () => {
         return () => {
             console.log('Cleaning up WebSocket and timers');
 
-            // すべてのタイマーをクリア
+            // 再接続タイマーをクリア
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current);
                 reconnectTimerRef.current = null;
             }
 
-            if (pingTimerRef.current) {
-                clearInterval(pingTimerRef.current);
-                pingTimerRef.current = null;
-            }
-
-            if (pingTimeoutRef.current) {
-                clearTimeout(pingTimeoutRef.current);
-                pingTimeoutRef.current = null;
-            }
-
-            if (dataTimeoutRef.current) {
-                clearInterval(dataTimeoutRef.current);
-                dataTimeoutRef.current = null;
-            }
-
-            if (connectionCheckTimerRef.current) {
-                clearInterval(connectionCheckTimerRef.current);
-                connectionCheckTimerRef.current = null;
-            }
+            // WebSocket関連タイマーをクリア
+            cleanupWebSocketTimers();
 
             // WebSocketを閉じる
             if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
