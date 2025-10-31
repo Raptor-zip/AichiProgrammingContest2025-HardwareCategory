@@ -19,20 +19,23 @@ const PIANO_CONFIG = {
     detectionThreshold: 0.2, // 検出閾値 (m) - この距離以下なら足を検出
 };
 
-// ピアノ音階定義 (C4 = ド)
+// ピアノ音階定義 (純正律 - 整数比)
+// C4 = 264 Hz (基準音を調整してキリの良い数値に)
+const BASE_FREQ = 264; // C4
+
 const PIANO_NOTES = [
-    { note: 'C4', freq: 261.63, name: 'ド', isBlack: false },
-    { note: 'C#4', freq: 277.18, name: 'ド#', isBlack: true },
-    { note: 'D4', freq: 293.66, name: 'レ', isBlack: false },
-    { note: 'D#4', freq: 311.13, name: 'レ#', isBlack: true },
-    { note: 'E4', freq: 329.63, name: 'ミ', isBlack: false },
-    { note: 'F4', freq: 349.23, name: 'フ', isBlack: false },
-    { note: 'F#4', freq: 369.99, name: 'フ#', isBlack: true },
-    { note: 'G4', freq: 392.00, name: 'ソ', isBlack: false },
-    { note: 'G#4', freq: 415.30, name: 'ソ#', isBlack: true },
-    { note: 'A4', freq: 440.00, name: 'ラ', isBlack: false },
-    { note: 'A#4', freq: 466.16, name: 'ラ#', isBlack: true },
-    { note: 'B4', freq: 493.88, name: 'シ', isBlack: false },
+    { note: 'C4', freq: BASE_FREQ * 1,        name: 'ド', isBlack: false },      // 1/1
+    { note: 'C#4', freq: BASE_FREQ * 16/15,   name: 'ド#', isBlack: true },     // 16/15
+    { note: 'D4', freq: BASE_FREQ * 9/8,      name: 'レ', isBlack: false },      // 9/8
+    { note: 'D#4', freq: BASE_FREQ * 6/5,     name: 'レ#', isBlack: true },     // 6/5
+    { note: 'E4', freq: BASE_FREQ * 5/4,      name: 'ミ', isBlack: false },      // 5/4
+    { note: 'F4', freq: BASE_FREQ * 4/3,      name: 'フ', isBlack: false },      // 4/3
+    { note: 'F#4', freq: BASE_FREQ * 45/32,   name: 'フ#', isBlack: true },     // 45/32
+    { note: 'G4', freq: BASE_FREQ * 3/2,      name: 'ソ', isBlack: false },      // 3/2
+    { note: 'G#4', freq: BASE_FREQ * 8/5,     name: 'ソ#', isBlack: true },     // 8/5
+    { note: 'A4', freq: BASE_FREQ * 5/3,      name: 'ラ', isBlack: false },      // 5/3
+    { note: 'A#4', freq: BASE_FREQ * 16/9,    name: 'ラ#', isBlack: true },     // 16/9
+    { note: 'B4', freq: BASE_FREQ * 15/8,     name: 'シ', isBlack: false },      // 15/8
 ];
 
 // Web Audio API用の音声生成
