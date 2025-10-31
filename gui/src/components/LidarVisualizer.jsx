@@ -12,8 +12,8 @@ function nowMs() {
 
 // ピアノ設定
 const PIANO_CONFIG = {
-    innerRadius: 0.5,      // 内径 (m)
-    outerRadius: 0.8,      // 外径 (m)
+    innerRadius: 1.0,      // 内径 (m)
+    outerRadius: 1.3,      // 外径 (m)
     startAngle: 50,        // 開始角度 (度) min:-90
     endAngle: 270,         // 終了角度 (度) max:270
 };
@@ -735,7 +735,7 @@ const LidarVisualizer = () => {
                         }
                         // ラベルも鍵盤に追従して下に移動
                         if (pianoLabelsRef.current[index]) {
-                            const defaultLabelY = note.isBlack ? 0.05 : 0.04;
+                            const defaultLabelY = note.isBlack ? 0.08 : 0.07;
                             const labelOffset = defaultLabelY - defaultY; // ラベルと鍵盤の相対オフセット
                             pianoLabelsRef.current[index].position.y = pressedY + labelOffset;
                         }
@@ -756,7 +756,7 @@ const LidarVisualizer = () => {
                         }
                         // ラベルも元の位置に戻す
                         if (pianoLabelsRef.current[index]) {
-                            const defaultLabelY = note.isBlack ? 0.05 : 0.04;
+                            const defaultLabelY = note.isBlack ? 0.08 : 0.07;
                             pianoLabelsRef.current[index].position.y = defaultLabelY;
                         }
                     }
@@ -1027,7 +1027,7 @@ const LidarVisualizer = () => {
                 }}
             >
                 <div style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '8px' }}>
-                    🎯 LiDAR Point Cloud Visualization
+                    🎯 SonicRing
                 </div>
                 <div>WebSocket: <span style={{ color: wsStatus === 'connected' ? '#0f0' : '#f00' }}>{wsStatus}</span></div>
                 <div>Points: 360 (1° resolution)</div>

@@ -137,7 +137,7 @@ void loop() {
     LD06_rxTask(&ld06, Serial2.read());
   }
 
-  // サーバー制御(1kHz)
+  // サーバー制御
   if (currentTime >= lastServerControlTime + 10) {
     wsServer.loop();
     httpServer.handleClient();
