@@ -848,8 +848,26 @@ const LidarVisualizer = () => {
             0.1,
             1000
         );
-        camera.position.set(5, 5, 5);
-        camera.lookAt(0, 0, 0);
+
+        // 鍵盤の中央角度を計算（LiDARの0度=前方なので-90度オフセット）
+        const centerAngle = (PIANO_CONFIG.startAngle + PIANO_CONFIG.endAngle) / 2.0 - 90;
+        const centerAngleRad = (centerAngle * Math.PI) / 180; // 180度反転
+
+        const cameraHeight = 1.5;
+        const horizontalOffset = -1.5; // 手前側へのオフセット
+        const lookAtDistance = 0.8; // 視点距離
+
+        camera.position.set(
+            -Math.cos(centerAngleRad) * horizontalOffset,
+            cameraHeight,
+            Math.sin(centerAngleRad) * horizontalOffset
+        );
+
+        camera.lookAt(
+            -Math.cos(centerAngleRad) * lookAtDistance,
+            0.0,
+            Math.sin(centerAngleRad) * lookAtDistance
+        );
 
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(containerRef.current.clientWidth, containerRef.current.clientHeight);
@@ -861,11 +879,14 @@ const LidarVisualizer = () => {
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
 
+        controls.target.set(0.0, 0.0, 0.0);
+        controls.update();
+
         // 初期鍵盤を作成
         createPianoKeys();
 
         // 照明を追加（MeshStandardMaterialのため）
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 1.6);
         scene.add(ambientLight);
 
         const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -890,7 +911,7 @@ const LidarVisualizer = () => {
             depthWrite: false
         });
         const centerSprite = new THREE.Sprite(centerSpriteMaterial);
-        centerSprite.position.set(0, 0.3, 0); // 円の中心、少し上
+        centerSprite.position.set(0, 0.2, 0); // 円の中心、少し上
         centerSprite.scale.set(1.5, 0.75, 1); // サイズ調整
         scene.add(centerSprite);
         centerTextRef.current = centerSprite;
