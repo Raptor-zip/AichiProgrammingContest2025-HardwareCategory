@@ -198,6 +198,7 @@ const LidarVisualizer = () => {
     const pingTimerRef = useRef(null);
     const pingTimeoutRef = useRef(null); // Pingタイムアウト監視用
     const pingSeqRef = useRef(0);
+    const pingHistoryRef = useRef([]); // Ping履歴（直近30秒分） { timestamp: number, rtt: number }[]
     const synthRef = useRef(null);
     const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
     const pianoEdgesRef = useRef([]); // ピアノ鍵盤の境界線配列
@@ -544,6 +545,7 @@ const LidarVisualizer = () => {
 
             // 接続後、自動的にPing送信開始（1秒間隔）
             pingSeqRef.current = 0;
+            pingHistoryRef.current = []; // Ping履歴をクリア
             setPingStats({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
 
             pingTimerRef.current = setInterval(() => {
@@ -798,16 +800,26 @@ const LidarVisualizer = () => {
                         const rtt = now - msg.t;
                         setLastRTT(rtt);
 
-                        setPingStats(prev => {
-                            const newCount = prev.count + 1;
-                            const newSum = (prev.avg * prev.count) + rtt;
-                            return {
-                                min: Math.min(prev.min, rtt),
-                                max: Math.max(prev.max, rtt),
-                                avg: newSum / newCount,
-                                count: newCount
-                            };
-                        });
+                        // Ping履歴に追加（タイムスタンプ付き）
+                        pingHistoryRef.current.push({ timestamp: now, rtt });
+
+                        // 30秒より古いデータを削除
+                        const thirtySecondsAgo = now - 30000; // 30秒 = 30000ms
+                        pingHistoryRef.current = pingHistoryRef.current.filter(
+                            entry => entry.timestamp >= thirtySecondsAgo
+                        );
+
+                        // 直近30秒分の統計を計算
+                        if (pingHistoryRef.current.length > 0) {
+                            const rtts = pingHistoryRef.current.map(e => e.rtt);
+                            const min = Math.min(...rtts);
+                            const max = Math.max(...rtts);
+                            const sum = rtts.reduce((acc, val) => acc + val, 0);
+                            const avg = sum / rtts.length;
+                            const count = rtts.length;
+
+                            setPingStats({ min, max, avg, count });
+                        }
                     }
                 } catch (e) {
                     console.warn('Invalid JSON from server', e);
@@ -1056,7 +1068,7 @@ const LidarVisualizer = () => {
 
                 <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
                     <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '5px' }}>
-                        📡 WebSocket Ping (Auto)
+                        📡 WebSocket Ping
                     </div>
                     <div>RTT: {lastRTT.toFixed(2)} ms</div>
                     <div>Min: {pingStats.min === Infinity ? '-' : pingStats.min.toFixed(2)} ms</div>
