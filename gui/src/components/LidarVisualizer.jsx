@@ -208,7 +208,7 @@ const LidarVisualizer = () => {
                         const distance = distances[i];
 
                         positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
-                        positions[i * 3 + 1] = 0.0;
+                        positions[i * 3 + 1] = 0.1; // 鍵盤より上に配置
                         positions[i * 3 + 2] = Math.sin(angle) * distance;
 
                         // ドーナツ領域判定
@@ -482,10 +482,10 @@ const LidarVisualizer = () => {
             const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
             const sprite = new THREE.Sprite(spriteMaterial);
 
-            // スプライトの位置（鍵盤の中心）
+            // スプライトの位置（鍵盤の中心）- 鍵盤と同じ角度オフセットを適用
             const midAngle = (startRad + endRad) / 2;
             const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
-            sprite.position.x = Math.cos(midAngle) * midRadius;
+            sprite.position.x = -Math.cos(midAngle) * midRadius; // x軸反転（点群と同じ）
             sprite.position.y = note.isBlack ? 0.05 : 0.04;
             sprite.position.z = Math.sin(midAngle) * midRadius;
             sprite.scale.set(0.2, 0.1, 1);
