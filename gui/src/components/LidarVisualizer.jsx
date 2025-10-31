@@ -145,6 +145,7 @@ const LidarVisualizer = () => {
     const synthRef = useRef(null);
     const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
     const pianoEdgesRef = useRef([]); // ピアノ鍵盤の境界線配列
+    const pianoLabelsRef = useRef([]); // ピアノ鍵盤の音名ラベル配列
     const activeNotesRef = useRef(new Set()); // 現在鳴っている音
     const octaveShiftRef = useRef(0); // オクターブシフトの現在値（ref版）
 
@@ -159,6 +160,44 @@ const LidarVisualizer = () => {
         const newOctave = octave + shift;
 
         return `${note}${newOctave}`;
+    };
+
+    // 3D上のラベルテキストを更新する関数
+    const updatePianoLabels = (shift) => {
+        pianoLabelsRef.current.forEach((sprite, index) => {
+            const note = PIANO_NOTES[index];
+            const shiftedName = shiftNoteName(note.note, shift);
+
+            // 新しいテクスチャを作成
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 512;
+            canvas.height = 256;
+
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.font = 'bold 120px Arial';
+
+            // 影を追加
+            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            context.shadowBlur = 10;
+            context.shadowOffsetX = 4;
+            context.shadowOffsetY = 4;
+
+            // 縁（ストローク）を追加
+            context.strokeStyle = note.isBlack ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.9)';
+            context.lineWidth = 20;
+            context.strokeText(shiftedName, 256, 128);
+
+            // テキスト本体
+            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.9)';
+            context.fillText(shiftedName, 256, 128);
+
+            // テクスチャを更新
+            const texture = new THREE.CanvasTexture(canvas);
+            sprite.material.map = texture;
+            sprite.material.needsUpdate = true;
+        });
     };
 
     const [wsStatus, setWsStatus] = useState('disconnected');
@@ -531,6 +570,7 @@ const LidarVisualizer = () => {
         const degreesPerKey = angleRange / PIANO_NOTES.length;
         const keys = [];
         const edges = [];
+        const labels = [];
 
         PIANO_NOTES.forEach((note, index) => {
             const startDeg = startAngle + (index * degreesPerKey);
@@ -637,10 +677,12 @@ const LidarVisualizer = () => {
             sprite.scale.set(0.2, 0.1, 1);
 
             scene.add(sprite);
+            labels.push(sprite);
         });
 
         pianoKeysRef.current = keys;
         pianoEdgesRef.current = edges;
+        pianoLabelsRef.current = labels;
 
         // 照明を追加（MeshStandardMaterialのため）
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -898,6 +940,8 @@ const LidarVisualizer = () => {
                                 const newShift = Math.max(octaveShift - 1, -2);
                                 setOctaveShift(newShift);
                                 octaveShiftRef.current = newShift;
+                                // 3D上のラベルを更新
+                                updatePianoLabels(newShift);
                                 // 既に鳴っている音を全て停止
                                 if (synthRef.current) {
                                     synthRef.current.stopAll();
@@ -934,6 +978,8 @@ const LidarVisualizer = () => {
                                 const newShift = Math.min(octaveShift + 1, 2);
                                 setOctaveShift(newShift);
                                 octaveShiftRef.current = newShift;
+                                // 3D上のラベルを更新
+                                updatePianoLabels(newShift);
                                 // 既に鳴っている音を全て停止
                                 if (synthRef.current) {
                                     synthRef.current.stopAll();
