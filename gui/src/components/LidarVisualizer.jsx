@@ -109,6 +109,7 @@ const LidarVisualizer = () => {
     const synthRef = useRef(null);
     const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
     const activeNotesRef = useRef(new Set()); // 現在鳴っている音
+    const octaveShiftRef = useRef(0); // オクターブシフトの現在値（ref版）
 
     const [wsStatus, setWsStatus] = useState('disconnected');
     const [frameCount, setFrameCount] = useState(0);
@@ -205,7 +206,7 @@ const LidarVisualizer = () => {
                         const angle = (i * Math.PI) / 180.0;
                         const distance = distances[i];
 
-                        positions[i * 3] = Math.cos(angle) * distance;
+                        positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
                         positions[i * 3 + 1] = 0.0;
                         positions[i * 3 + 2] = Math.sin(angle) * distance;
 
@@ -256,7 +257,7 @@ const LidarVisualizer = () => {
                     // 新しく検出された音を再生（オクターブシフト適用）
                     detectedNotes.forEach(note => {
                         if (!activeNotesRef.current.has(note.note)) {
-                            const shiftedFreq = note.freq * Math.pow(2, octaveShift);
+                            const shiftedFreq = note.freq * Math.pow(2, octaveShiftRef.current);
                             synthRef.current.playNote(shiftedFreq, note.note);
                             activeNotesRef.current.add(note.note);
                         }
@@ -449,6 +450,32 @@ const LidarVisualizer = () => {
             edges.rotation.x = -Math.PI / 2;
             edges.position.y = note.isBlack ? 0.021 : 0.011; // 鍵盤より少し上
             scene.add(edges);
+
+            // 鍵盤に音名テキストを追加
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 256;
+            canvas.height = 128;
+
+            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.9)' : 'rgba(0, 0, 0, 0.8)';
+            context.font = 'bold 48px Arial';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(note.note, 128, 64);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            const sprite = new THREE.Sprite(spriteMaterial);
+
+            // スプライトの位置（鍵盤の中心）
+            const midAngle = (startRad + endRad) / 2;
+            const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
+            sprite.position.x = Math.cos(midAngle) * midRadius;
+            sprite.position.y = note.isBlack ? 0.05 : 0.04;
+            sprite.position.z = Math.sin(midAngle) * midRadius;
+            sprite.scale.set(0.2, 0.1, 1);
+
+            scene.add(sprite);
         });
 
         pianoKeysRef.current = keys;
@@ -656,7 +683,9 @@ const LidarVisualizer = () => {
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setOctaveShift(prev => Math.max(prev - 1, -2));
+                                const newShift = Math.max(octaveShift - 1, -2);
+                                setOctaveShift(newShift);
+                                octaveShiftRef.current = newShift;
                                 // 既に鳴っている音を全て停止
                                 if (synthRef.current) {
                                     synthRef.current.stopAll();
@@ -690,7 +719,9 @@ const LidarVisualizer = () => {
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setOctaveShift(prev => Math.min(prev + 1, 2));
+                                const newShift = Math.min(octaveShift + 1, 2);
+                                setOctaveShift(newShift);
+                                octaveShiftRef.current = newShift;
                                 // 既に鳴っている音を全て停止
                                 if (synthRef.current) {
                                     synthRef.current.stopAll();
