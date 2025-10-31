@@ -10,6 +10,90 @@ function nowMs() {
     return Date.now();
 }
 
+// ピアノ設定
+const PIANO_CONFIG = {
+    innerRadius: 0.3,      // 内径 (m)
+    outerRadius: 2.0,      // 外径 (m)
+    startAngle: -90,       // 開始角度 (度)
+    endAngle: 90,          // 終了角度 (度)
+    detectionThreshold: 0.2, // 検出閾値 (m) - この距離以下なら足を検出
+};
+
+// ピアノ音階定義 (C4 = ド)
+const PIANO_NOTES = [
+    { note: 'C4', freq: 261.63, name: 'ド', isBlack: false },
+    { note: 'C#4', freq: 277.18, name: 'ド#', isBlack: true },
+    { note: 'D4', freq: 293.66, name: 'レ', isBlack: false },
+    { note: 'D#4', freq: 311.13, name: 'レ#', isBlack: true },
+    { note: 'E4', freq: 329.63, name: 'ミ', isBlack: false },
+    { note: 'F4', freq: 349.23, name: 'フ', isBlack: false },
+    { note: 'F#4', freq: 369.99, name: 'フ#', isBlack: true },
+    { note: 'G4', freq: 392.00, name: 'ソ', isBlack: false },
+    { note: 'G#4', freq: 415.30, name: 'ソ#', isBlack: true },
+    { note: 'A4', freq: 440.00, name: 'ラ', isBlack: false },
+    { note: 'A#4', freq: 466.16, name: 'ラ#', isBlack: true },
+    { note: 'B4', freq: 493.88, name: 'シ', isBlack: false },
+];
+
+// Web Audio API用の音声生成
+class PianoSynth {
+    constructor() {
+        this.audioContext = null;
+        this.oscillators = new Map();
+        this.gainNodes = new Map();
+    }
+
+    init() {
+        if (!this.audioContext) {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    }
+
+    playNote(freq, noteName) {
+        this.init();
+
+        // 既に鳴っている音を停止
+        if (this.oscillators.has(noteName)) {
+            this.stopNote(noteName);
+        }
+
+        const oscillator = this.audioContext.createOscillator();
+        const gainNode = this.audioContext.createGain();
+
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(freq, this.audioContext.currentTime);
+
+        gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+        gainNode.gain.linearRampToValueAtTime(0.3, this.audioContext.currentTime + 0.01);
+
+        oscillator.connect(gainNode);
+        gainNode.connect(this.audioContext.destination);
+
+        oscillator.start();
+
+        this.oscillators.set(noteName, oscillator);
+        this.gainNodes.set(noteName, gainNode);
+    }
+
+    stopNote(noteName) {
+        const oscillator = this.oscillators.get(noteName);
+        const gainNode = this.gainNodes.get(noteName);
+
+        if (oscillator && gainNode) {
+            gainNode.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + 0.1);
+            oscillator.stop(this.audioContext.currentTime + 0.1);
+            this.oscillators.delete(noteName);
+            this.gainNodes.delete(noteName);
+        }
+    }
+
+    stopAll() {
+        for (const noteName of this.oscillators.keys()) {
+            this.stopNote(noteName);
+        }
+    }
+}
+
 const LidarVisualizer = () => {
     const containerRef = useRef(null);
     const sceneRef = useRef(null);
@@ -19,6 +103,9 @@ const LidarVisualizer = () => {
     const wsRef = useRef(null);
     const pingTimerRef = useRef(null);
     const pingSeqRef = useRef(0);
+    const synthRef = useRef(null);
+    const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
+    const activeNotesRef = useRef(new Set()); // 現在鳴っている音
 
     const [wsStatus, setWsStatus] = useState('disconnected');
     const [frameCount, setFrameCount] = useState(0);
@@ -27,6 +114,7 @@ const LidarVisualizer = () => {
     const [pingEnabled, setPingEnabled] = useState(false);
     const [pingStats, setPingStats] = useState({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
     const [lastRTT, setLastRTT] = useState(0);
+    const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
 
     // WebSocket接続とバイナリデータ受信
     useEffect(() => {
@@ -87,6 +175,7 @@ const LidarVisualizer = () => {
 
                 const distances = new Float32Array(buffer.buffer, 8, pointCount);
 
+                // 点群を更新
                 if (pointsRef.current) {
                     const positions = pointsRef.current.geometry.attributes.position.array;
                     const colors = pointsRef.current.geometry.attributes.color.array;
@@ -108,6 +197,80 @@ const LidarVisualizer = () => {
                     pointsRef.current.geometry.attributes.position.needsUpdate = true;
                     pointsRef.current.geometry.attributes.color.needsUpdate = true;
                 }
+
+                // ピアノ鍵盤の足検出
+                const detectedNotes = [];
+                const { innerRadius, outerRadius, startAngle, endAngle, detectionThreshold } = PIANO_CONFIG;
+                const angleRange = endAngle - startAngle;
+                const degreesPerKey = angleRange / PIANO_NOTES.length;
+
+                for (let i = 0; i < 360; i++) {
+                    const angleDeg = i - 90; // LiDARの0度を前方に調整
+                    const distance = distances[i];
+
+                    // ピアノの角度範囲内かチェック
+                    if (angleDeg >= startAngle && angleDeg <= endAngle) {
+                        // 距離がピアノの範囲内かチェック
+                        if (distance >= innerRadius && distance <= outerRadius) {
+                            // 検出閾値以下なら足を検出
+                            const baselineDistance = (innerRadius + outerRadius) / 2;
+                            if (distance < baselineDistance - detectionThreshold) {
+                                // どの鍵盤か判定
+                                const relativeAngle = angleDeg - startAngle;
+                                const keyIndex = Math.floor(relativeAngle / degreesPerKey);
+
+                                if (keyIndex >= 0 && keyIndex < PIANO_NOTES.length) {
+                                    const note = PIANO_NOTES[keyIndex];
+                                    if (!detectedNotes.find(n => n.note === note.note)) {
+                                        detectedNotes.push(note);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 音の再生・停止
+                if (synthRef.current) {
+                    // 新しく検出された音を再生
+                    detectedNotes.forEach(note => {
+                        if (!activeNotesRef.current.has(note.note)) {
+                            synthRef.current.playNote(note.freq, note.note);
+                            activeNotesRef.current.add(note.note);
+                        }
+                    });
+
+                    // 検出されなくなった音を停止
+                    const detectedNoteNames = new Set(detectedNotes.map(n => n.note));
+                    for (const noteName of activeNotesRef.current) {
+                        if (!detectedNoteNames.has(noteName)) {
+                            synthRef.current.stopNote(noteName);
+                            activeNotesRef.current.delete(noteName);
+                        }
+                    }
+                }
+
+                // 鍵盤の色を更新
+                pianoKeysRef.current.forEach((keyMesh, index) => {
+                    const note = PIANO_NOTES[index];
+                    const isActive = detectedNotes.some(n => n.note === note.note);
+
+                    if (isActive) {
+                        keyMesh.material.color.setHex(0xffff00); // 黄色（踏まれている）
+                        keyMesh.material.emissive.setHex(0xff8800);
+                    } else {
+                        // デフォルトの色に戻す
+                        if (note.isBlack) {
+                            keyMesh.material.color.setHex(0x333333);
+                            keyMesh.material.emissive.setHex(0x000000);
+                        } else {
+                            keyMesh.material.color.setHex(0xffffff);
+                            keyMesh.material.emissive.setHex(0x000000);
+                        }
+                    }
+                });
+
+                setCurrentNotes(detectedNotes);
 
                 receivedFrames++;
                 setFrameCount(prev => prev + 1);
@@ -189,22 +352,88 @@ const LidarVisualizer = () => {
         const axesHelper = new THREE.AxesHelper(5);
         scene.add(axesHelper);
 
-        const ringShape = new THREE.Shape();
-        ringShape.absarc(0, 0, 3.0, 0, Math.PI * 2, false);
-        const holePath = new THREE.Path();
-        holePath.absarc(0, 0, 0.5, 0, Math.PI * 2, true);
-        ringShape.holes.push(holePath);
+        // ピアノ鍵盤の作成
+        const { innerRadius, outerRadius, startAngle, endAngle } = PIANO_CONFIG;
+        const angleRange = endAngle - startAngle;
+        const degreesPerKey = angleRange / PIANO_NOTES.length;
+        const keys = [];
 
-        const ringGeometry = new THREE.ShapeGeometry(ringShape);
-        const ringMaterial = new THREE.MeshBasicMaterial({
-            color: 0x00ff00,
-            side: THREE.DoubleSide,
-            transparent: true,
-            opacity: 0.2
+        PIANO_NOTES.forEach((note, index) => {
+            const startDeg = startAngle + (index * degreesPerKey);
+            const endDeg = startDeg + degreesPerKey;
+
+            // ラジアンに変換（-90度オフセット: LiDARの0度=前方）
+            const startRad = ((startDeg + 90) * Math.PI) / 180;
+            const endRad = ((endDeg + 90) * Math.PI) / 180;
+
+            // 黒鍵は外側、白鍵は内側から外側まで
+            const keyInnerRadius = note.isBlack ? (innerRadius + outerRadius) / 2 : innerRadius;
+            const keyOuterRadius = outerRadius;
+
+            // ドーナツセグメントの形状を作成
+            const keyShape = new THREE.Shape();
+            const segments = 32;
+
+            // 外周
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                const angle = startRad + (endRad - startRad) * t;
+                const x = Math.cos(angle) * keyOuterRadius;
+                const y = Math.sin(angle) * keyOuterRadius;
+                if (i === 0) {
+                    keyShape.moveTo(x, y);
+                } else {
+                    keyShape.lineTo(x, y);
+                }
+            }
+
+            // 内周（逆方向）
+            for (let i = segments; i >= 0; i--) {
+                const t = i / segments;
+                const angle = startRad + (endRad - startRad) * t;
+                const x = Math.cos(angle) * keyInnerRadius;
+                const y = Math.sin(angle) * keyInnerRadius;
+                keyShape.lineTo(x, y);
+            }
+
+            keyShape.closePath();
+
+            const keyGeometry = new THREE.ShapeGeometry(keyShape);
+            const keyMaterial = new THREE.MeshStandardMaterial({
+                color: note.isBlack ? 0x333333 : 0xffffff,
+                emissive: 0x000000,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: note.isBlack ? 0.7 : 0.9
+            });
+
+            const keyMesh = new THREE.Mesh(keyGeometry, keyMaterial);
+            keyMesh.rotation.x = -Math.PI / 2;
+            keyMesh.position.y = note.isBlack ? 0.02 : 0.01; // 黒鍵を少し上に
+            scene.add(keyMesh);
+            keys.push(keyMesh);
+
+            // 鍵盤の境界線を追加
+            const edgeGeometry = new THREE.EdgesGeometry(keyGeometry);
+            const edgeMaterial = new THREE.LineBasicMaterial({
+                color: note.isBlack ? 0x666666 : 0x888888,
+                linewidth: 2
+            });
+            const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+            edges.rotation.x = -Math.PI / 2;
+            edges.position.y = note.isBlack ? 0.021 : 0.011; // 鍵盤より少し上
+            scene.add(edges);
         });
-        const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-        ring.rotation.x = -Math.PI / 2;
-        scene.add(ring);
+
+        pianoKeysRef.current = keys;
+
+        // 照明を追加（MeshStandardMaterialのため）
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 5);
+        scene.add(directionalLight);
 
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(360 * 3);
@@ -272,6 +501,8 @@ const LidarVisualizer = () => {
                     position: 'relative'
                 }}
             />
+
+            {/* 左上: LiDAR情報 */}
             <div
                 style={{
                     position: 'absolute',
@@ -308,6 +539,74 @@ const LidarVisualizer = () => {
                 <div style={{ marginTop: '10px', fontSize: '12px', opacity: 0.8 }}>
                     Controls: Mouse to rotate, scroll to zoom
                 </div>
+            </div>
+
+            {/* 中央上部: 演奏中の音符 */}
+            <div
+                style={{
+                    position: 'absolute',
+                    top: 20,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    color: 'white',
+                    background: 'rgba(0, 0, 0, 0.8)',
+                    padding: '20px 40px',
+                    borderRadius: '15px',
+                    fontFamily: 'sans-serif',
+                    fontSize: '48px',
+                    fontWeight: 'bold',
+                    minWidth: '300px',
+                    textAlign: 'center',
+                    boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)'
+                }}
+            >
+                <div style={{ fontSize: '24px', marginBottom: '10px', opacity: 0.7 }}>
+                    🎹 演奏中の音
+                </div>
+                <div style={{
+                    fontSize: '64px',
+                    color: currentNotes.length > 0 ? '#ffff00' : '#666',
+                    textShadow: currentNotes.length > 0 ? '0 0 20px rgba(255, 255, 0, 0.8)' : 'none'
+                }}>
+                    {currentNotes.length > 0
+                        ? currentNotes.map(n => n.label).join(' + ')
+                        : '---'
+                    }
+                </div>
+                <div style={{ fontSize: '18px', marginTop: '10px', opacity: 0.6 }}>
+                    {currentNotes.length > 0
+                        ? currentNotes.map(n => n.note).join(', ')
+                        : '足を鍵盤に乗せてください'
+                    }
+                </div>
+            </div>
+
+            {/* 右上: ピアノ設定 */}
+            <div
+                style={{
+                    position: 'absolute',
+                    top: 10,
+                    right: 10,
+                    color: 'white',
+                    background: 'rgba(0, 0, 0, 0.7)',
+                    padding: '10px',
+                    borderRadius: '5px',
+                    fontFamily: 'monospace',
+                    fontSize: '12px'
+                }}
+            >
+                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
+                    🎹 ピアノペダル設定
+                </div>
+                <div>内側半径: {PIANO_CONFIG.innerRadius}m</div>
+                <div>外側半径: {PIANO_CONFIG.outerRadius}m</div>
+                <div>開始角度: {PIANO_CONFIG.startAngle}°</div>
+                <div>終了角度: {PIANO_CONFIG.endAngle}°</div>
+                <div>検出閾値: {PIANO_CONFIG.detectionThreshold}m</div>
+                <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
+                    鍵盤数: {PIANO_NOTES.length}
+                </div>
+                <div>演奏中: {currentNotes.length} 音</div>
             </div>
         </div>
     );

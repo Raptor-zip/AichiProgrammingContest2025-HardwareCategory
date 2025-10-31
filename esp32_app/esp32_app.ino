@@ -4,6 +4,7 @@
 // - LiDAR data: 360 points (1 degree resolution), distance only
 
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>  // https://github.com/Links2004/arduinoWebSockets
 #include "LD06.h"
@@ -94,6 +95,12 @@ void setup() {
   }
   Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
+
+    if (!MDNS.begin("esp32")) {
+      Serial.println("Error starting mDNS");
+      return;
+    }
+
     IPAddress myIP = WiFi.localIP();
     Serial.print("Connected. IP address: ");
     Serial.println(myIP);
@@ -127,7 +134,7 @@ void loop() {
   }
 
   // サーバー制御(1kHz)
-  if (currentTime >= lastServerControlTime + 1) {
+  if (currentTime >= lastServerControlTime + 10) {
     wsServer.loop();
     httpServer.handleClient();
     lastServerControlTime = currentTime;
