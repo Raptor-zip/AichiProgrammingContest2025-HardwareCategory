@@ -14,8 +14,8 @@ function nowMs() {
 const PIANO_CONFIG = {
     innerRadius: 0.5,      // 内径 (m)
     outerRadius: 1.0,      // 外径 (m)
-    startAngle: -90,       // 開始角度 (度)
-    endAngle: 90,          // 終了角度 (度)
+    startAngle: 90,       // 開始角度 (度)
+    endAngle: 270,          // 終了角度 (度)
     detectionThreshold: 0.2, // 検出閾値 (m) - この距離以下なら足を検出
 };
 
@@ -52,9 +52,9 @@ class PianoSynth {
     playNote(freq, noteName) {
         this.init();
 
-        // 既に鳴っている音を停止
+        // 既に鳴っている場合は何もしない（連打防止）
         if (this.oscillators.has(noteName)) {
-            this.stopNote(noteName);
+            return;
         }
 
         const oscillator = this.audioContext.createOscillator();
@@ -116,6 +116,7 @@ const LidarVisualizer = () => {
     const [lastRTT, setLastRTT] = useState(0);
     const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
     const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
+    const [octaveShift, setOctaveShift] = useState(0); // オクターブシフト (-2 ~ +2)
 
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
@@ -249,10 +250,11 @@ const LidarVisualizer = () => {
 
                 // 音の再生・停止
                 if (synthRef.current) {
-                    // 新しく検出された音を再生
+                    // 新しく検出された音を再生（オクターブシフト適用）
                     detectedNotes.forEach(note => {
                         if (!activeNotesRef.current.has(note.note)) {
-                            synthRef.current.playNote(note.freq, note.note);
+                            const shiftedFreq = note.freq * Math.pow(2, octaveShift);
+                            synthRef.current.playNote(shiftedFreq, note.note);
                             activeNotesRef.current.add(note.note);
                         }
                     });
@@ -384,8 +386,8 @@ const LidarVisualizer = () => {
             const endDeg = startDeg + degreesPerKey;
 
             // ラジアンに変換（-90度オフセット: LiDARの0度=前方）
-            const startRad = ((startDeg + 90) * Math.PI) / 180;
-            const endRad = ((endDeg + 90) * Math.PI) / 180;
+            const startRad = ((startDeg - 90) * Math.PI) / 180;
+            const endRad = ((endDeg - 90) * Math.PI) / 180;
 
             // 黒鍵は外側、白鍵は内側から外側まで
             const keyInnerRadius = note.isBlack ? (innerRadius + outerRadius) / 2 : innerRadius;
@@ -637,6 +639,81 @@ const LidarVisualizer = () => {
                     鍵盤数: {PIANO_NOTES.length}
                 </div>
                 <div>演奏中: {currentNotes.length} 音</div>
+
+                {/* オクターブ調整 */}
+                <div style={{
+                    marginTop: '12px',
+                    paddingTop: '12px',
+                    borderTop: '1px solid rgba(255,255,255,0.3)'
+                }}>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
+                        🎵 オクターブシフト
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setOctaveShift(prev => Math.max(prev - 1, -2));
+                                // 既に鳴っている音を全て停止
+                                if (synthRef.current) {
+                                    synthRef.current.stopAll();
+                                    activeNotesRef.current.clear();
+                                }
+                            }}
+                            disabled={octaveShift <= -2}
+                            style={{
+                                padding: '8px 16px',
+                                fontSize: '18px',
+                                fontWeight: 'bold',
+                                background: octaveShift <= -2 ? '#444' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '5px',
+                                cursor: octaveShift <= -2 ? 'not-allowed' : 'pointer',
+                                opacity: octaveShift <= -2 ? 0.5 : 1
+                            }}
+                        >
+                            −
+                        </button>
+                        <div style={{
+                            fontSize: '18px',
+                            fontWeight: 'bold',
+                            minWidth: '60px',
+                            textAlign: 'center',
+                            color: octaveShift === 0 ? '#0f0' : '#ff0'
+                        }}>
+                            {octaveShift > 0 ? '+' : ''}{octaveShift}
+                        </div>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setOctaveShift(prev => Math.min(prev + 1, 2));
+                                // 既に鳴っている音を全て停止
+                                if (synthRef.current) {
+                                    synthRef.current.stopAll();
+                                    activeNotesRef.current.clear();
+                                }
+                            }}
+                            disabled={octaveShift >= 2}
+                            style={{
+                                padding: '8px 16px',
+                                fontSize: '18px',
+                                fontWeight: 'bold',
+                                background: octaveShift >= 2 ? '#444' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '5px',
+                                cursor: octaveShift >= 2 ? 'not-allowed' : 'pointer',
+                                opacity: octaveShift >= 2 ? 0.5 : 1
+                            }}
+                        >
+                            +
+                        </button>
+                    </div>
+                    <div style={{ fontSize: '10px', marginTop: '5px', opacity: 0.7 }}>
+                        範囲: -2 〜 +2
+                    </div>
+                </div>
             </div>
         </div>
     );
