@@ -44,8 +44,8 @@ class PianoSynth {
         this.audioContext = null;
         this.oscillators = new Map();
         this.gainNodes = new Map();
-        this.waveType = 'sine'; // デフォルトはサイン波
-        this.decayEnabled = false; // 減衰機能のON/OFF
+        this.waveType = 'sawtooth'; // デフォルトはノコギリ波
+        this.decayEnabled = true; // 減衰機能のON/OFF（デフォルト: ON）
         this.decayTime = 2.0; // 減衰時間（秒）
         this.noteStartTimes = new Map(); // 各音の開始時刻
     }
@@ -247,8 +247,8 @@ const LidarVisualizer = () => {
     const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
     const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
     const [octaveShift, setOctaveShift] = useState(0); // オクターブシフト (-2 ~ +2)
-    const [waveType, setWaveType] = useState('sine'); // 波形タイプ
-    const [decayEnabled, setDecayEnabled] = useState(false); // 音の減衰ON/OFF
+    const [waveType, setWaveType] = useState('sawtooth'); // 波形タイプ（デフォルト: ノコギリ波）
+    const [decayEnabled, setDecayEnabled] = useState(true); // 音の減衰ON/OFF（デフォルト: ON）
     const [flipHorizontal, setFlipHorizontal] = useState(false); // 左右反転
     const [flipVertical, setFlipVertical] = useState(false); // 上下反転
     const [rotate180, setRotate180] = useState(false); // 180度回転
