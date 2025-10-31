@@ -211,8 +211,6 @@ const LidarVisualizer = () => {
     const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
     const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
     const boundaryMarginRatioRef = useRef(0.2);
-    const innerRingRef = useRef(null);
-    const outerRingRef = useRef(null);
 
     // 円の中心のテキストを更新する関数
     const updateCenterText = (notes) => {
@@ -290,7 +288,9 @@ const LidarVisualizer = () => {
         const scene = sceneRef.current;
         if (!scene) return;
 
-        const { innerRadius, outerRadius, startAngle, endAngle } = PIANO_CONFIG;
+        const { startAngle, endAngle } = PIANO_CONFIG;
+        const innerR = innerRadiusRef.current;
+        const outerR = outerRadiusRef.current;
         const angleRange = endAngle - startAngle;
         const currentNotes = pianoNotesRef.current;
         const degreesPerKey = angleRange / currentNotes.length;
@@ -307,8 +307,8 @@ const LidarVisualizer = () => {
             const endRad = ((endDeg - 90) * Math.PI) / 180;
 
             // 黒鍵は外側、白鍵は内側から外側まで
-            const keyInnerRadius = note.isBlack ? (innerRadius + outerRadius) / 2 : innerRadius;
-            const keyOuterRadius = outerRadius;
+            const keyInnerRadius = note.isBlack ? (innerR + outerR) / 2 : innerR;
+            const keyOuterRadius = outerR;
 
             // ドーナツセグメントの形状を作成
             const keyShape = new THREE.Shape();
@@ -338,13 +338,20 @@ const LidarVisualizer = () => {
 
             keyShape.closePath();
 
-            const keyGeometry = new THREE.ShapeGeometry(keyShape);
+            // 厚みを持たせるためにExtrudeGeometryを使用
+            const extrudeSettings = {
+                depth: note.isBlack ? 0.03 : 0.02, // 黒鍵は厚め
+                bevelEnabled: true,
+                bevelThickness: 0.002,
+                bevelSize: 0.002,
+                bevelSegments: 2
+            };
+            const keyGeometry = new THREE.ExtrudeGeometry(keyShape, extrudeSettings);
             const keyMaterial = new THREE.MeshStandardMaterial({
                 color: note.isBlack ? 0x333333 : 0xffffff,
                 emissive: 0x000000,
-                side: THREE.DoubleSide,
-                transparent: true,
-                opacity: note.isBlack ? 0.7 : 0.9
+                metalness: 0.1,
+                roughness: 0.4
             });
 
             const keyMesh = new THREE.Mesh(keyGeometry, keyMaterial);
@@ -353,17 +360,14 @@ const LidarVisualizer = () => {
             scene.add(keyMesh);
             keys.push(keyMesh);
 
-            // 鍵盤の境界線を追加
-            const edgeGeometry = new THREE.EdgesGeometry(keyGeometry);
+            // 3D形状の鍵盤の境界線を追加（重要なエッジのみ）
+            const edgeGeometry = new THREE.EdgesGeometry(keyGeometry, 15); // 15度以上のエッジのみ
             const edgeMaterial = new THREE.LineBasicMaterial({
                 color: note.isBlack ? 0x666666 : 0x888888,
                 linewidth: 2
             });
             const edgeLine = new THREE.LineSegments(edgeGeometry, edgeMaterial);
-            edgeLine.rotation.x = -Math.PI / 2;
-            edgeLine.position.y = note.isBlack ? 0.021 : 0.011; // 鍵盤より少し上
-            scene.add(edgeLine);
-            edges.push(edgeLine);
+            keyMesh.add(edgeLine); // keyMeshの子要素として追加
 
             // 鍵盤に音名テキストを追加
             const canvas = document.createElement('canvas');
@@ -398,7 +402,7 @@ const LidarVisualizer = () => {
             const midAngle = (startRad + endRad) / 2;
             const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
             sprite.position.x = Math.cos(midAngle) * midRadius;
-            sprite.position.y = note.isBlack ? 0.05 : 0.04;
+            sprite.position.y = note.isBlack ? 0.08 : 0.07;
             sprite.position.z = -Math.sin(midAngle) * midRadius;
             sprite.scale.set(0.2, 0.1, 1);
 
@@ -453,52 +457,38 @@ const LidarVisualizer = () => {
             // 鍵盤を再生成
             createPianoKeys();
         }
-    }, [rangeShift]);
+    }, [rangeShift, createPianoKeys]);
 
-    // inner/outer ring を再生成して見た目を更新
+    // 半径が変更されたら鍵盤を再生成
     useEffect(() => {
-        const scene = sceneRef.current;
-        if (!scene) return;
+        if (sceneRef.current) {
+            // 既存の鍵盤をクリア
+            pianoKeysRef.current.forEach(key => {
+                if (key.geometry) key.geometry.dispose();
+                if (key.material) key.material.dispose();
+                sceneRef.current.remove(key);
+            });
+            pianoEdgesRef.current.forEach(edge => {
+                if (edge.geometry) edge.geometry.dispose();
+                if (edge.material) edge.material.dispose();
+                sceneRef.current.remove(edge);
+            });
+            pianoLabelsRef.current.forEach(label => {
+                if (label.geometry) label.geometry.dispose();
+                if (label.material) {
+                    if (label.material.map) label.material.map.dispose();
+                    label.material.dispose();
+                }
+                sceneRef.current.remove(label);
+            });
+            pianoKeysRef.current = [];
+            pianoEdgesRef.current = [];
+            pianoLabelsRef.current = [];
 
-        // Helper: remove and dispose geometry/material
-        const removeRing = (ring) => {
-            if (!ring) return;
-            if (ring.geometry) ring.geometry.dispose();
-            if (ring.material) ring.material.dispose();
-            scene.remove(ring);
-        };
-
-        // 再作成
-        removeRing(innerRingRef.current);
-        removeRing(outerRingRef.current);
-
-        const createRing = (radius, color = 0x00ff00) => {
-            const segments = 128;
-            const positions = new Float32Array(segments * 3);
-            for (let i = 0; i < segments; i++) {
-                const t = (i / segments) * Math.PI * 2;
-                positions[i * 3] = Math.cos(t) * radius;
-                positions[i * 3 + 1] = 0.02;
-                positions[i * 3 + 2] = -Math.sin(t) * radius;
-            }
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            const mat = new THREE.LineBasicMaterial({ color, linewidth: 2, transparent: true, opacity: 0.6 });
-            const line = new THREE.LineLoop(geo, mat);
-            scene.add(line);
-            return line;
-        };
-
-        innerRingRef.current = createRing(innerRadiusRef.current, 0x00ff00);
-        outerRingRef.current = createRing(outerRadiusRef.current, 0x00aaee);
-
-        return () => {
-            removeRing(innerRingRef.current);
-            removeRing(outerRingRef.current);
-            innerRingRef.current = null;
-            outerRingRef.current = null;
-        };
-    }, [innerRadius, outerRadius]);
+            // 鍵盤を再生成
+            createPianoKeys();
+        }
+    }, [innerRadius, outerRadius, createPianoKeys]);
 
     // 減衰機能のON/OFFをsynthに反映
     useEffect(() => {
@@ -904,27 +894,6 @@ const LidarVisualizer = () => {
         centerSprite.scale.set(1.5, 0.75, 1); // サイズ調整
         scene.add(centerSprite);
         centerTextRef.current = centerSprite;
-
-        // 可視化用: 検出リング（内側/外側）を作成
-        const createRing = (radius, color = 0x00ff00) => {
-            const segments = 128;
-            const positions = new Float32Array(segments * 3);
-            for (let i = 0; i < segments; i++) {
-                const t = (i / segments) * Math.PI * 2;
-                positions[i * 3] = Math.cos(t) * radius;
-                positions[i * 3 + 1] = 0.02; // 少し上に表示
-                positions[i * 3 + 2] = -Math.sin(t) * radius;
-            }
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            const mat = new THREE.LineBasicMaterial({ color, linewidth: 2, transparent: true, opacity: 0.6 });
-            const line = new THREE.LineLoop(geo, mat);
-            scene.add(line);
-            return line;
-        };
-
-        innerRingRef.current = createRing(innerRadiusRef.current, 0x00ff00);
-        outerRingRef.current = createRing(outerRadiusRef.current, 0x00aaee);
 
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(360 * 3);
