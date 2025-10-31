@@ -13,7 +13,7 @@ function nowMs() {
 // ピアノ設定
 const PIANO_CONFIG = {
     innerRadius: 0.5,      // 内径 (m)
-    outerRadius: 1.0,      // 外径 (m)
+    outerRadius: 0.8,      // 外径 (m)
     startAngle: 90,       // 開始角度 (度)
     endAngle: 270,          // 終了角度 (度)
     detectionThreshold: 0.2, // 検出閾値 (m) - この距離以下なら足を検出
@@ -246,6 +246,7 @@ const LidarVisualizer = () => {
                 const { innerRadius, outerRadius, startAngle, endAngle, detectionThreshold } = PIANO_CONFIG;
                 const angleRange = endAngle - startAngle;
                 const degreesPerKey = angleRange / PIANO_NOTES.length;
+                const boundaryMarginRatio = 0.2; // 鍵盤の境界20%を除外（左右各10%）
 
                 for (let i = 0; i < 360; i++) {
                     const angleDeg = i - 90; // LiDARの0度を前方に調整
@@ -255,20 +256,23 @@ const LidarVisualizer = () => {
                     if (angleDeg >= startAngle && angleDeg <= endAngle) {
                         // 距離がピアノの範囲内かチェック
                         if (distance >= innerRadius && distance <= outerRadius) {
-                            // 検出閾値以下なら足を検出
-                            // const baselineDistance = ( + outerRadius) / 2;
-                            // if (innerRadius < distance && distance > outerRadius) {
                             // どの鍵盤か判定
                             const relativeAngle = angleDeg - startAngle;
                             const keyIndex = Math.floor(relativeAngle / degreesPerKey);
 
                             if (keyIndex >= 0 && keyIndex < PIANO_NOTES.length) {
-                                const note = PIANO_NOTES[keyIndex];
-                                if (!detectedNotes.find(n => n.note === note.note)) {
-                                    detectedNotes.push(note);
+                                // 鍵盤内の相対位置を計算（0.0〜1.0）
+                                const positionInKey = (relativeAngle - keyIndex * degreesPerKey) / degreesPerKey;
+
+                                // 境界マージンを除外（中央80%のみ有効）
+                                const margin = boundaryMarginRatio / 2;
+                                if (positionInKey >= margin && positionInKey <= (1.0 - margin)) {
+                                    const note = PIANO_NOTES[keyIndex];
+                                    if (!detectedNotes.find(n => n.note === note.note)) {
+                                        detectedNotes.push(note);
+                                    }
                                 }
                             }
-                            // }
                         }
                     }
                 }
