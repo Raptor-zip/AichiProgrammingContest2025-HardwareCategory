@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
@@ -14,8 +14,8 @@ function nowMs() {
 const PIANO_CONFIG = {
     innerRadius: 0.5,      // 内径 (m)
     outerRadius: 0.8,      // 外径 (m)
-    startAngle: 90,       // 開始角度 (度)
-    endAngle: 270,          // 終了角度 (度)
+    startAngle: 70,       // 開始角度 (度)
+    endAngle: 290,          // 終了角度 (度)
 };
 
 // ピアノ音階定義 (純正律 - 整数比)
@@ -24,25 +24,75 @@ const BASE_FREQ = 264; // C4
 
 // 音域設定
 const PIANO_RANGE = {
-    startNote: 'B3',  // 開始音
-    endNote: 'C4',    // 終了音
+    startNote: 'C',    // 開始音名（オクターブ番号なし）
+    startOctave: 3,    // 開始オクターブ
+    endNote: 'B',      // 終了音名（オクターブ番号なし）
+    endOctave: 4,      // 終了オクターブ
+    rangeShift: 0,     // 音域シフト (-2〜+2 オクターブ)
 };
 
-const PIANO_NOTES = [
-    { note: 'B3', freq: BASE_FREQ * 15 / 16, name: 'シ', isBlack: false },    // 15/16 (1オクターブ下の15/8)
-    { note: 'C4', freq: BASE_FREQ * 1, name: 'ド', isBlack: false },          // 1/1
-    { note: 'C#4', freq: BASE_FREQ * 16 / 15, name: 'ド#', isBlack: true },   // 16/15
-    { note: 'D4', freq: BASE_FREQ * 9 / 8, name: 'レ', isBlack: false },      // 9/8
-    { note: 'D#4', freq: BASE_FREQ * 6 / 5, name: 'レ#', isBlack: true },     // 6/5
-    { note: 'E4', freq: BASE_FREQ * 5 / 4, name: 'ミ', isBlack: false },      // 5/4
-    { note: 'F4', freq: BASE_FREQ * 4 / 3, name: 'フ', isBlack: false },      // 4/3
-    { note: 'F#4', freq: BASE_FREQ * 45 / 32, name: 'フ#', isBlack: true },   // 45/32
-    { note: 'G4', freq: BASE_FREQ * 3 / 2, name: 'ソ', isBlack: false },      // 3/2
-    { note: 'G#4', freq: BASE_FREQ * 8 / 5, name: 'ソ#', isBlack: true },     // 8/5
-    { note: 'A4', freq: BASE_FREQ * 5 / 3, name: 'ラ', isBlack: false },      // 5/3
-    { note: 'A#4', freq: BASE_FREQ * 16 / 9, name: 'ラ#', isBlack: true },    // 16/9
-    { note: 'B4', freq: BASE_FREQ * 15 / 8, name: 'シ', isBlack: false },     // 15/8
+// 基本音階定義（C4基準、1オクターブ分）
+const BASE_NOTES = [
+    { note: 'C', ratio: 1,        name: 'ド',   isBlack: false },  // 1/1
+    { note: 'C#', ratio: 16 / 15,  name: 'ド#', isBlack: true },   // 16/15
+    { note: 'D', ratio: 9 / 8,    name: 'レ',   isBlack: false },  // 9/8
+    { note: 'D#', ratio: 6 / 5,    name: 'レ#', isBlack: true },   // 6/5
+    { note: 'E', ratio: 5 / 4,    name: 'ミ',   isBlack: false },  // 5/4
+    { note: 'F', ratio: 4 / 3,    name: 'フ',   isBlack: false },  // 4/3
+    { note: 'F#', ratio: 45 / 32,  name: 'フ#', isBlack: true },   // 45/32
+    { note: 'G', ratio: 3 / 2,    name: 'ソ',   isBlack: false },  // 3/2
+    { note: 'G#', ratio: 8 / 5,    name: 'ソ#', isBlack: true },   // 8/5
+    { note: 'A', ratio: 5 / 3,    name: 'ラ',   isBlack: false },  // 5/3
+    { note: 'A#', ratio: 16 / 9,   name: 'ラ#', isBlack: true },   // 16/9
+    { note: 'B', ratio: 15 / 8,   name: 'シ',   isBlack: false },  // 15/8
 ];
+
+// 音階範囲を生成する関数
+function generatePianoNotes(startNote, startOctave, endNote, endOctave, rangeShift = 0) {
+    const notes = [];
+    const startIdx = BASE_NOTES.findIndex(n => n.note === startNote);
+    const endIdx = BASE_NOTES.findIndex(n => n.note === endNote);
+
+    if (startIdx === -1 || endIdx === -1) {
+        console.error('Invalid note names');
+        return notes;
+    }
+
+    // シフトを適用
+    const shiftedStartOctave = startOctave + rangeShift;
+    const shiftedEndOctave = endOctave + rangeShift;
+
+    // 開始オクターブから終了オクターブまで生成
+    for (let octave = shiftedStartOctave; octave <= shiftedEndOctave; octave++) {
+        const octaveDiff = octave - 4; // C4を基準とした差分
+        const octaveMultiplier = Math.pow(2, octaveDiff);
+
+        for (let i = 0; i < BASE_NOTES.length; i++) {
+            // 範囲チェック
+            if (octave === shiftedStartOctave && i < startIdx) continue;
+            if (octave === shiftedEndOctave && i > endIdx) break;
+
+            const baseNote = BASE_NOTES[i];
+            notes.push({
+                note: `${baseNote.note}${octave}`,
+                freq: BASE_FREQ * baseNote.ratio * octaveMultiplier,
+                name: baseNote.name,
+                isBlack: baseNote.isBlack,
+            });
+        }
+    }
+
+    return notes;
+}
+
+// 初期音階を生成
+let PIANO_NOTES = generatePianoNotes(
+    PIANO_RANGE.startNote,
+    PIANO_RANGE.startOctave,
+    PIANO_RANGE.endNote,
+    PIANO_RANGE.endOctave,
+    PIANO_RANGE.rangeShift
+);
 
 // Web Audio API用の音声生成
 class PianoSynth {
@@ -155,6 +205,8 @@ const LidarVisualizer = () => {
     const centerTextRef = useRef(null); // 円の中心の演奏中テキスト
     const activeNotesRef = useRef(new Set()); // 現在鳴っている音
     const octaveShiftRef = useRef(0); // オクターブシフトの現在値（ref版）
+    const rangeShiftRef = useRef(PIANO_RANGE.rangeShift); // 音域シフトの現在値（ref版）
+    const pianoNotesRef = useRef(PIANO_NOTES); // 現在の音階配列（ref版）
     // 可変パラメータ用のrefs
     const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
     const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
@@ -259,6 +311,7 @@ const LidarVisualizer = () => {
     const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
     const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
     const [octaveShift, setOctaveShift] = useState(0); // オクターブシフト (-2 ~ +2)
+    const [rangeShift, setRangeShift] = useState(PIANO_RANGE.rangeShift); // 音域シフト (-2 ~ +2)
     const [waveType, setWaveType] = useState('sawtooth'); // 波形タイプ（デフォルト: ノコギリ波）
     const [decayEnabled, setDecayEnabled] = useState(true); // 音の減衰ON/OFF（デフォルト: ON）
     const [flipHorizontal, setFlipHorizontal] = useState(false); // 左右反転
@@ -283,6 +336,176 @@ const LidarVisualizer = () => {
     useEffect(() => { innerRadiusRef.current = innerRadius; }, [innerRadius]);
     useEffect(() => { outerRadiusRef.current = outerRadius; }, [outerRadius]);
     useEffect(() => { boundaryMarginRatioRef.current = boundaryMarginRatio; }, [boundaryMarginRatio]);
+
+    // ピアノ鍵盤を作成する関数（useCallbackでメモ化）
+    const createPianoKeys = useCallback(() => {
+        const scene = sceneRef.current;
+        if (!scene) return;
+
+        const { innerRadius, outerRadius, startAngle, endAngle } = PIANO_CONFIG;
+        const angleRange = endAngle - startAngle;
+        const currentNotes = pianoNotesRef.current;
+        const degreesPerKey = angleRange / currentNotes.length;
+        const keys = [];
+        const edges = [];
+        const labels = [];
+
+        currentNotes.forEach((note, index) => {
+            const startDeg = startAngle + (index * degreesPerKey);
+            const endDeg = startDeg + degreesPerKey;
+
+            // ラジアンに変換（-90度オフセット: LiDARの0度=前方）
+            const startRad = ((startDeg - 90) * Math.PI) / 180;
+            const endRad = ((endDeg - 90) * Math.PI) / 180;
+
+            // 黒鍵は外側、白鍵は内側から外側まで
+            const keyInnerRadius = note.isBlack ? (innerRadius + outerRadius) / 2 : innerRadius;
+            const keyOuterRadius = outerRadius;
+
+            // ドーナツセグメントの形状を作成
+            const keyShape = new THREE.Shape();
+            const segments = 32;
+
+            // 外周
+            for (let i = 0; i <= segments; i++) {
+                const t = i / segments;
+                const angle = startRad + (endRad - startRad) * t;
+                const x = Math.cos(angle) * keyOuterRadius;
+                const y = Math.sin(angle) * keyOuterRadius;
+                if (i === 0) {
+                    keyShape.moveTo(x, y);
+                } else {
+                    keyShape.lineTo(x, y);
+                }
+            }
+
+            // 内周（逆方向）
+            for (let i = segments; i >= 0; i--) {
+                const t = i / segments;
+                const angle = startRad + (endRad - startRad) * t;
+                const x = Math.cos(angle) * keyInnerRadius;
+                const y = Math.sin(angle) * keyInnerRadius;
+                keyShape.lineTo(x, y);
+            }
+
+            keyShape.closePath();
+
+            const keyGeometry = new THREE.ShapeGeometry(keyShape);
+            const keyMaterial = new THREE.MeshStandardMaterial({
+                color: note.isBlack ? 0x333333 : 0xffffff,
+                emissive: 0x000000,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: note.isBlack ? 0.7 : 0.9
+            });
+
+            const keyMesh = new THREE.Mesh(keyGeometry, keyMaterial);
+            keyMesh.rotation.x = -Math.PI / 2;
+            keyMesh.position.y = note.isBlack ? 0.02 : 0.01; // 黒鍵を少し上に
+            scene.add(keyMesh);
+            keys.push(keyMesh);
+
+            // 鍵盤の境界線を追加
+            const edgeGeometry = new THREE.EdgesGeometry(keyGeometry);
+            const edgeMaterial = new THREE.LineBasicMaterial({
+                color: note.isBlack ? 0x666666 : 0x888888,
+                linewidth: 2
+            });
+            const edgeLine = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+            edgeLine.rotation.x = -Math.PI / 2;
+            edgeLine.position.y = note.isBlack ? 0.021 : 0.011; // 鍵盤より少し上
+            scene.add(edgeLine);
+            edges.push(edgeLine);
+
+            // 鍵盤に音名テキストを追加
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 512;
+            canvas.height = 256;
+
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.font = 'bold 120px Arial';
+
+            // 影を追加
+            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            context.shadowBlur = 10;
+            context.shadowOffsetX = 4;
+            context.shadowOffsetY = 4;
+
+            // 縁（ストローク）を追加
+            context.strokeStyle = note.isBlack ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.9)';
+            context.lineWidth = 20;
+            context.strokeText(note.note, 256, 128);
+
+            // テキスト本体
+            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.9)';
+            context.fillText(note.note, 256, 128);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            const sprite = new THREE.Sprite(spriteMaterial);
+
+            // スプライトの位置（鍵盤の中心）
+            const midAngle = (startRad + endRad) / 2;
+            const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
+            sprite.position.x = Math.cos(midAngle) * midRadius;
+            sprite.position.y = note.isBlack ? 0.05 : 0.04;
+            sprite.position.z = -Math.sin(midAngle) * midRadius;
+            sprite.scale.set(0.2, 0.1, 1);
+
+            scene.add(sprite);
+            labels.push(sprite);
+        });
+
+        pianoKeysRef.current = keys;
+        pianoEdgesRef.current = edges;
+        pianoLabelsRef.current = labels;
+    }, []);
+
+    // 音域シフトが変更されたら音階を再生成
+    useEffect(() => {
+        rangeShiftRef.current = rangeShift;
+        const newNotes = generatePianoNotes(
+            PIANO_RANGE.startNote,
+            PIANO_RANGE.startOctave,
+            PIANO_RANGE.endNote,
+            PIANO_RANGE.endOctave,
+            rangeShift
+        );
+        pianoNotesRef.current = newNotes;
+        PIANO_NOTES = newNotes; // グローバル変数も更新
+        console.log(`Range shifted to ${rangeShift}: ${newNotes.length} notes, from ${newNotes[0].note} to ${newNotes[newNotes.length - 1].note}`);
+
+        // 鍵盤を再描画（次のレンダリングサイクルで反映）
+        if (sceneRef.current) {
+            // 既存の鍵盤をクリア
+            pianoKeysRef.current.forEach(key => {
+                if (key.geometry) key.geometry.dispose();
+                if (key.material) key.material.dispose();
+                sceneRef.current.remove(key);
+            });
+            pianoEdgesRef.current.forEach(edge => {
+                if (edge.geometry) edge.geometry.dispose();
+                if (edge.material) edge.material.dispose();
+                sceneRef.current.remove(edge);
+            });
+            pianoLabelsRef.current.forEach(label => {
+                if (label.geometry) label.geometry.dispose();
+                if (label.material) {
+                    if (label.material.map) label.material.map.dispose();
+                    label.material.dispose();
+                }
+                sceneRef.current.remove(label);
+            });
+            pianoKeysRef.current = [];
+            pianoEdgesRef.current = [];
+            pianoLabelsRef.current = [];
+
+            // 鍵盤を再生成
+            createPianoKeys();
+        }
+    }, [rangeShift]);
 
     // inner/outer ring を再生成して見た目を更新
     useEffect(() => {
@@ -495,8 +718,9 @@ const LidarVisualizer = () => {
                 const endAngle = PIANO_CONFIG.endAngle;
                 const innerR = innerRadiusRef.current;
                 const outerR = outerRadiusRef.current;
+                const currentPianoNotes = pianoNotesRef.current;
                 const angleRange = endAngle - startAngle;
-                const degreesPerKey = angleRange / PIANO_NOTES.length;
+                const degreesPerKey = angleRange / currentPianoNotes.length;
                 const boundaryMarginRatio = boundaryMarginRatioRef.current; // 鍵盤の境界割合（左右各 margin/2 を除外）
 
                 for (let i = 0; i < 360; i++) {
@@ -511,14 +735,14 @@ const LidarVisualizer = () => {
                             const relativeAngle = angleDeg - startAngle;
                             const keyIndex = Math.floor(relativeAngle / degreesPerKey);
 
-                            if (keyIndex >= 0 && keyIndex < PIANO_NOTES.length) {
+                            if (keyIndex >= 0 && keyIndex < currentPianoNotes.length) {
                                 // 鍵盤内の相対位置を計算（0.0〜1.0）
                                 const positionInKey = (relativeAngle - keyIndex * degreesPerKey) / degreesPerKey;
 
                                 // 境界マージンを除外（中央80%のみ有効）
                                 const margin = boundaryMarginRatio / 2;
                                 if (positionInKey >= margin && positionInKey <= (1.0 - margin)) {
-                                    const note = PIANO_NOTES[keyIndex];
+                                    const note = currentPianoNotes[keyIndex];
                                     if (!detectedNotes.find(n => n.note === note.note)) {
                                         detectedNotes.push(note);
                                     }
@@ -689,125 +913,8 @@ const LidarVisualizer = () => {
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
 
-        // ピアノ鍵盤の作成
-        const { innerRadius, outerRadius, startAngle, endAngle } = PIANO_CONFIG;
-        const angleRange = endAngle - startAngle;
-        const degreesPerKey = angleRange / PIANO_NOTES.length;
-        const keys = [];
-        const edges = [];
-        const labels = [];
-
-        PIANO_NOTES.forEach((note, index) => {
-            const startDeg = startAngle + (index * degreesPerKey);
-            const endDeg = startDeg + degreesPerKey;
-
-            // ラジアンに変換（-90度オフセット: LiDARの0度=前方）
-            const startRad = ((startDeg - 90) * Math.PI) / 180;
-            const endRad = ((endDeg - 90) * Math.PI) / 180;
-
-            // 黒鍵は外側、白鍵は内側から外側まで
-            const keyInnerRadius = note.isBlack ? (innerRadius + outerRadius) / 2 : innerRadius;
-            const keyOuterRadius = outerRadius;
-
-            // ドーナツセグメントの形状を作成
-            const keyShape = new THREE.Shape();
-            const segments = 32;
-
-            // 外周
-            for (let i = 0; i <= segments; i++) {
-                const t = i / segments;
-                const angle = startRad + (endRad - startRad) * t;
-                const x = Math.cos(angle) * keyOuterRadius;
-                const y = Math.sin(angle) * keyOuterRadius;
-                if (i === 0) {
-                    keyShape.moveTo(x, y);
-                } else {
-                    keyShape.lineTo(x, y);
-                }
-            }
-
-            // 内周（逆方向）
-            for (let i = segments; i >= 0; i--) {
-                const t = i / segments;
-                const angle = startRad + (endRad - startRad) * t;
-                const x = Math.cos(angle) * keyInnerRadius;
-                const y = Math.sin(angle) * keyInnerRadius;
-                keyShape.lineTo(x, y);
-            }
-
-            keyShape.closePath();
-
-            const keyGeometry = new THREE.ShapeGeometry(keyShape);
-            const keyMaterial = new THREE.MeshStandardMaterial({
-                color: note.isBlack ? 0x333333 : 0xffffff,
-                emissive: 0x000000,
-                side: THREE.DoubleSide,
-                transparent: true,
-                opacity: note.isBlack ? 0.7 : 0.9
-            });
-
-            const keyMesh = new THREE.Mesh(keyGeometry, keyMaterial);
-            keyMesh.rotation.x = -Math.PI / 2;
-            keyMesh.position.y = note.isBlack ? 0.02 : 0.01; // 黒鍵を少し上に
-            scene.add(keyMesh);
-            keys.push(keyMesh);
-
-            // 鍵盤の境界線を追加
-            const edgeGeometry = new THREE.EdgesGeometry(keyGeometry);
-            const edgeMaterial = new THREE.LineBasicMaterial({
-                color: note.isBlack ? 0x666666 : 0x888888,
-                linewidth: 2
-            });
-            const edgeLine = new THREE.LineSegments(edgeGeometry, edgeMaterial);
-            edgeLine.rotation.x = -Math.PI / 2;
-            edgeLine.position.y = note.isBlack ? 0.021 : 0.011; // 鍵盤より少し上
-            scene.add(edgeLine);
-            edges.push(edgeLine);
-
-            // 鍵盤に音名テキストを追加
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            canvas.width = 512;
-            canvas.height = 256;
-
-            context.textAlign = 'center';
-            context.textBaseline = 'middle';
-            context.font = 'bold 120px Arial';
-
-            // 影を追加
-            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
-            context.shadowBlur = 10;
-            context.shadowOffsetX = 4;
-            context.shadowOffsetY = 4;
-
-            // 縁（ストローク）を追加
-            context.strokeStyle = note.isBlack ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.9)';
-            context.lineWidth = 20;
-            context.strokeText(note.note, 256, 128);
-
-            // テキスト本体
-            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.9)';
-            context.fillText(note.note, 256, 128);
-
-            const texture = new THREE.CanvasTexture(canvas);
-            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
-            const sprite = new THREE.Sprite(spriteMaterial);
-
-            // スプライトの位置（鍵盤の中心）
-            const midAngle = (startRad + endRad) / 2;
-            const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
-            sprite.position.x = Math.cos(midAngle) * midRadius; // 符号を反転
-            sprite.position.y = note.isBlack ? 0.05 : 0.04;
-            sprite.position.z = -Math.sin(midAngle) * midRadius;
-            sprite.scale.set(0.2, 0.1, 1);
-
-            scene.add(sprite);
-            labels.push(sprite);
-        });
-
-        pianoKeysRef.current = keys;
-        pianoEdgesRef.current = edges;
-        pianoLabelsRef.current = labels;
+        // 初期鍵盤を作成
+        createPianoKeys();
 
         // 照明を追加（MeshStandardMaterialのため）
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -1184,6 +1291,83 @@ const LidarVisualizer = () => {
                     </div>
                     <div style={{ fontSize: '10px', marginTop: '5px', opacity: 0.7 }}>
                         範囲: -2 〜 +2
+                    </div>
+                </div>
+
+                {/* 音域シフト */}
+                <div style={{
+                    marginTop: '12px',
+                    paddingTop: '12px',
+                    borderTop: '1px solid rgba(255,255,255,0.3)'
+                }}>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
+                        🎹 音域シフト
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const newShift = Math.max(rangeShift - 1, -2);
+                                setRangeShift(newShift);
+                                // 既に鳴っている音を全て停止
+                                if (synthRef.current) {
+                                    synthRef.current.stopAll();
+                                    activeNotesRef.current.clear();
+                                }
+                            }}
+                            disabled={rangeShift <= -2}
+                            style={{
+                                padding: '8px 16px',
+                                fontSize: '18px',
+                                fontWeight: 'bold',
+                                background: rangeShift <= -2 ? '#444' : '#cc6600',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '5px',
+                                cursor: rangeShift <= -2 ? 'not-allowed' : 'pointer',
+                                opacity: rangeShift <= -2 ? 0.5 : 1
+                            }}
+                        >
+                            −
+                        </button>
+                        <div style={{
+                            fontSize: '18px',
+                            fontWeight: 'bold',
+                            minWidth: '60px',
+                            textAlign: 'center',
+                            color: rangeShift === 0 ? '#0f0' : '#ffa500'
+                        }}>
+                            {rangeShift > 0 ? '+' : ''}{rangeShift}
+                        </div>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const newShift = Math.min(rangeShift + 1, 2);
+                                setRangeShift(newShift);
+                                // 既に鳴っている音を全て停止
+                                if (synthRef.current) {
+                                    synthRef.current.stopAll();
+                                    activeNotesRef.current.clear();
+                                }
+                            }}
+                            disabled={rangeShift >= 2}
+                            style={{
+                                padding: '8px 16px',
+                                fontSize: '18px',
+                                fontWeight: 'bold',
+                                background: rangeShift >= 2 ? '#444' : '#cc6600',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '5px',
+                                cursor: rangeShift >= 2 ? 'not-allowed' : 'pointer',
+                                opacity: rangeShift >= 2 ? 0.5 : 1
+                            }}
+                        >
+                            +
+                        </button>
+                    </div>
+                    <div style={{ fontSize: '10px', marginTop: '5px', opacity: 0.7 }}>
+                        範囲: {PIANO_RANGE.startNote}{PIANO_RANGE.startOctave + rangeShift} 〜 {PIANO_RANGE.endNote}{PIANO_RANGE.endOctave + rangeShift} ({pianoNotesRef.current.length}音)
                     </div>
                 </div>
 
