@@ -44,12 +44,17 @@ class PianoSynth {
         this.audioContext = null;
         this.oscillators = new Map();
         this.gainNodes = new Map();
+        this.waveType = 'sine'; // デフォルトはサイン波
     }
 
     init() {
         if (!this.audioContext) {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
         }
+    }
+
+    setWaveType(type) {
+        this.waveType = type;
     }
 
     playNote(freq, noteName) {
@@ -63,7 +68,7 @@ class PianoSynth {
         const oscillator = this.audioContext.createOscillator();
         const gainNode = this.audioContext.createGain();
 
-        oscillator.type = 'sine';
+        oscillator.type = this.waveType; // 設定された波形を使用
         oscillator.frequency.setValueAtTime(freq, this.audioContext.currentTime);
 
         gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
@@ -121,6 +126,7 @@ const LidarVisualizer = () => {
     const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
     const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
     const [octaveShift, setOctaveShift] = useState(0); // オクターブシフト (-2 ~ +2)
+    const [waveType, setWaveType] = useState('sine'); // 波形タイプ
 
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
@@ -273,6 +279,7 @@ const LidarVisualizer = () => {
                     detectedNotes.forEach(note => {
                         if (!activeNotesRef.current.has(note.note)) {
                             const shiftedFreq = note.freq * Math.pow(2, octaveShiftRef.current);
+                            console.log(`Playing: ${note.note}, base: ${note.freq}Hz, shifted: ${shiftedFreq.toFixed(2)}Hz, octave: ${octaveShiftRef.current}`);
                             synthRef.current.playNote(shiftedFreq, note.note);
                             activeNotesRef.current.add(note.note);
                         }
@@ -482,12 +489,12 @@ const LidarVisualizer = () => {
             const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
             const sprite = new THREE.Sprite(spriteMaterial);
 
-            // スプライトの位置（鍵盤の中心）- 鍵盤と同じ角度オフセットを適用
+            // スプライトの位置（鍵盤の中心）- 180度反転が必要
             const midAngle = (startRad + endRad) / 2;
             const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
-            sprite.position.x = -Math.cos(midAngle) * midRadius; // x軸反転（点群と同じ）
+            sprite.position.x = -Math.cos(midAngle) * midRadius;
             sprite.position.y = note.isBlack ? 0.05 : 0.04;
-            sprite.position.z = Math.sin(midAngle) * midRadius;
+            sprite.position.z = -Math.sin(midAngle) * midRadius;
             sprite.scale.set(0.2, 0.1, 1);
 
             scene.add(sprite);
@@ -767,6 +774,50 @@ const LidarVisualizer = () => {
                     </div>
                     <div style={{ fontSize: '10px', marginTop: '5px', opacity: 0.7 }}>
                         範囲: -2 〜 +2
+                    </div>
+                </div>
+
+                {/* 波形選択 */}
+                <div style={{
+                    marginTop: '12px',
+                    paddingTop: '12px',
+                    borderTop: '1px solid rgba(255,255,255,0.3)'
+                }}>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
+                        🎵 波形タイプ
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
+                        {['sine', 'triangle', 'sawtooth', 'square'].map(type => (
+                            <button
+                                key={type}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setWaveType(type);
+                                    if (synthRef.current) {
+                                        synthRef.current.setWaveType(type);
+                                        // 既に鳴っている音を停止
+                                        synthRef.current.stopAll();
+                                        activeNotesRef.current.clear();
+                                    }
+                                }}
+                                style={{
+                                    padding: '6px 10px',
+                                    fontSize: '11px',
+                                    fontWeight: 'bold',
+                                    background: waveType === type ? '#00cc00' : '#0066cc',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    opacity: waveType === type ? 1 : 0.7
+                                }}
+                            >
+                                {type === 'sine' ? 'サイン波' :
+                                 type === 'triangle' ? '三角波' :
+                                 type === 'sawtooth' ? 'ノコギリ波' :
+                                 '矩形波'}
+                            </button>
+                        ))}
                     </div>
                 </div>
             </div>
