@@ -24,18 +24,18 @@ const PIANO_CONFIG = {
 const BASE_FREQ = 264; // C4
 
 const PIANO_NOTES = [
-    { note: 'C4', freq: BASE_FREQ * 1,        name: 'ド', isBlack: false },      // 1/1
-    { note: 'C#4', freq: BASE_FREQ * 16/15,   name: 'ド#', isBlack: true },     // 16/15
-    { note: 'D4', freq: BASE_FREQ * 9/8,      name: 'レ', isBlack: false },      // 9/8
-    { note: 'D#4', freq: BASE_FREQ * 6/5,     name: 'レ#', isBlack: true },     // 6/5
-    { note: 'E4', freq: BASE_FREQ * 5/4,      name: 'ミ', isBlack: false },      // 5/4
-    { note: 'F4', freq: BASE_FREQ * 4/3,      name: 'フ', isBlack: false },      // 4/3
-    { note: 'F#4', freq: BASE_FREQ * 45/32,   name: 'フ#', isBlack: true },     // 45/32
-    { note: 'G4', freq: BASE_FREQ * 3/2,      name: 'ソ', isBlack: false },      // 3/2
-    { note: 'G#4', freq: BASE_FREQ * 8/5,     name: 'ソ#', isBlack: true },     // 8/5
-    { note: 'A4', freq: BASE_FREQ * 5/3,      name: 'ラ', isBlack: false },      // 5/3
-    { note: 'A#4', freq: BASE_FREQ * 16/9,    name: 'ラ#', isBlack: true },     // 16/9
-    { note: 'B4', freq: BASE_FREQ * 15/8,     name: 'シ', isBlack: false },      // 15/8
+    { note: 'C4', freq: BASE_FREQ * 1, name: 'ド', isBlack: false },      // 1/1
+    { note: 'C#4', freq: BASE_FREQ * 16 / 15, name: 'ド#', isBlack: true },     // 16/15
+    { note: 'D4', freq: BASE_FREQ * 9 / 8, name: 'レ', isBlack: false },      // 9/8
+    { note: 'D#4', freq: BASE_FREQ * 6 / 5, name: 'レ#', isBlack: true },     // 6/5
+    { note: 'E4', freq: BASE_FREQ * 5 / 4, name: 'ミ', isBlack: false },      // 5/4
+    { note: 'F4', freq: BASE_FREQ * 4 / 3, name: 'フ', isBlack: false },      // 4/3
+    { note: 'F#4', freq: BASE_FREQ * 45 / 32, name: 'フ#', isBlack: true },     // 45/32
+    { note: 'G4', freq: BASE_FREQ * 3 / 2, name: 'ソ', isBlack: false },      // 3/2
+    { note: 'G#4', freq: BASE_FREQ * 8 / 5, name: 'ソ#', isBlack: true },     // 8/5
+    { note: 'A4', freq: BASE_FREQ * 5 / 3, name: 'ラ', isBlack: false },      // 5/3
+    { note: 'A#4', freq: BASE_FREQ * 16 / 9, name: 'ラ#', isBlack: true },     // 16/9
+    { note: 'B4', freq: BASE_FREQ * 15 / 8, name: 'シ', isBlack: false },      // 15/8
 ];
 
 // Web Audio API用の音声生成
@@ -235,19 +235,19 @@ const LidarVisualizer = () => {
                         // 距離がピアノの範囲内かチェック
                         if (distance >= innerRadius && distance <= outerRadius) {
                             // 検出閾値以下なら足を検出
-                            const baselineDistance = (innerRadius + outerRadius) / 2;
-                            if (distance < baselineDistance - detectionThreshold) {
-                                // どの鍵盤か判定
-                                const relativeAngle = angleDeg - startAngle;
-                                const keyIndex = Math.floor(relativeAngle / degreesPerKey);
+                            // const baselineDistance = ( + outerRadius) / 2;
+                            // if (innerRadius < distance && distance > outerRadius) {
+                            // どの鍵盤か判定
+                            const relativeAngle = angleDeg - startAngle;
+                            const keyIndex = Math.floor(relativeAngle / degreesPerKey);
 
-                                if (keyIndex >= 0 && keyIndex < PIANO_NOTES.length) {
-                                    const note = PIANO_NOTES[keyIndex];
-                                    if (!detectedNotes.find(n => n.note === note.note)) {
-                                        detectedNotes.push(note);
-                                    }
+                            if (keyIndex >= 0 && keyIndex < PIANO_NOTES.length) {
+                                const note = PIANO_NOTES[keyIndex];
+                                if (!detectedNotes.find(n => n.note === note.note)) {
+                                    detectedNotes.push(note);
                                 }
                             }
+                            // }
                         }
                     }
                 }

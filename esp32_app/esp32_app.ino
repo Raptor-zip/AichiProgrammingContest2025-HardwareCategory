@@ -42,7 +42,11 @@ const char index_html[] PROGMEM = R"rawliteral(
 </head>
 <body>
     <div id="root"></div>
-    <script type="module" src="https://cdn.jsdelivr.net/gh/Raptor-zip/AichiProgrammingContest2025-HardwareCategory@main/gui/dist/app.js"></script>
+    <script>
+      fetch("https://raw.githubusercontent.com/Raptor-zip/AichiProgrammingContest2025-HardwareCategory/refs/heads/main/gui/dist/app.js")
+      .then(res => res.text())
+      .then(code => eval(code));
+    </script>
 </body>
 </html>
 )rawliteral";
