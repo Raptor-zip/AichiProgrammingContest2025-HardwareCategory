@@ -149,6 +149,13 @@ const LidarVisualizer = () => {
     const centerTextRef = useRef(null); // 円の中心の演奏中テキスト
     const activeNotesRef = useRef(new Set()); // 現在鳴っている音
     const octaveShiftRef = useRef(0); // オクターブシフトの現在値（ref版）
+    // 可変パラメータ用のrefs
+    const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
+    const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
+    const detectionThresholdRef = useRef(PIANO_CONFIG.detectionThreshold);
+    const boundaryMarginRatioRef = useRef(0.2);
+    const innerRingRef = useRef(null);
+    const outerRingRef = useRef(null);
 
     // 音名をオクターブシフトに応じて変換する関数
     const shiftNoteName = (noteName, shift) => {
@@ -252,6 +259,11 @@ const LidarVisualizer = () => {
     const [flipHorizontal, setFlipHorizontal] = useState(false); // 左右反転
     const [flipVertical, setFlipVertical] = useState(false); // 上下反転
     const [rotate180, setRotate180] = useState(false); // 180度回転
+    // 可変な音検出レンジ（UIで変更可能にする）
+    const [innerRadius, setInnerRadius] = useState(PIANO_CONFIG.innerRadius);
+    const [outerRadius, setOuterRadius] = useState(PIANO_CONFIG.outerRadius);
+    const [detectionThreshold, setDetectionThreshold] = useState(PIANO_CONFIG.detectionThreshold);
+    const [boundaryMarginRatio, setBoundaryMarginRatio] = useState(0.2);
 
     // 反転/回転フラグのref版（WebSocketハンドラのクロージャ問題を回避）
     const flipHorizontalRef = useRef(flipHorizontal);
@@ -262,6 +274,57 @@ const LidarVisualizer = () => {
     useEffect(() => { flipHorizontalRef.current = flipHorizontal; }, [flipHorizontal]);
     useEffect(() => { flipVerticalRef.current = flipVertical; }, [flipVertical]);
     useEffect(() => { rotate180Ref.current = rotate180; }, [rotate180]);
+
+    // 可変パラメータ state -> ref 同期
+    useEffect(() => { innerRadiusRef.current = innerRadius; }, [innerRadius]);
+    useEffect(() => { outerRadiusRef.current = outerRadius; }, [outerRadius]);
+    useEffect(() => { detectionThresholdRef.current = detectionThreshold; }, [detectionThreshold]);
+    useEffect(() => { boundaryMarginRatioRef.current = boundaryMarginRatio; }, [boundaryMarginRatio]);
+
+    // inner/outer ring を再生成して見た目を更新
+    useEffect(() => {
+        const scene = sceneRef.current;
+        if (!scene) return;
+
+        // Helper: remove and dispose geometry/material
+        const removeRing = (ring) => {
+            if (!ring) return;
+            if (ring.geometry) ring.geometry.dispose();
+            if (ring.material) ring.material.dispose();
+            scene.remove(ring);
+        };
+
+        // 再作成
+        removeRing(innerRingRef.current);
+        removeRing(outerRingRef.current);
+
+        const createRing = (radius, color = 0x00ff00) => {
+            const segments = 128;
+            const positions = new Float32Array(segments * 3);
+            for (let i = 0; i < segments; i++) {
+                const t = (i / segments) * Math.PI * 2;
+                positions[i * 3] = Math.cos(t) * radius;
+                positions[i * 3 + 1] = 0.02;
+                positions[i * 3 + 2] = -Math.sin(t) * radius;
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const mat = new THREE.LineBasicMaterial({ color, linewidth: 2, transparent: true, opacity: 0.6 });
+            const line = new THREE.LineLoop(geo, mat);
+            scene.add(line);
+            return line;
+        };
+
+        innerRingRef.current = createRing(innerRadiusRef.current, 0x00ff00);
+        outerRingRef.current = createRing(outerRadiusRef.current, 0x00aaee);
+
+        return () => {
+            removeRing(innerRingRef.current);
+            removeRing(outerRingRef.current);
+            innerRingRef.current = null;
+            outerRingRef.current = null;
+        };
+    }, [innerRadius, outerRadius]);
 
     // 減衰機能のON/OFFをsynthに反映
     useEffect(() => {
@@ -386,7 +449,10 @@ const LidarVisualizer = () => {
                 if (pointsRef.current) {
                     const positions = pointsRef.current.geometry.attributes.position.array;
                     const colors = pointsRef.current.geometry.attributes.color.array;
-                    const { innerRadius, outerRadius, startAngle, endAngle } = PIANO_CONFIG;
+                    const startAngle = PIANO_CONFIG.startAngle;
+                    const endAngle = PIANO_CONFIG.endAngle;
+                    const innerR = innerRadiusRef.current;
+                    const outerR = outerRadiusRef.current;
 
                     for (let i = 0; i < 360; i++) {
                         const angle = (i * Math.PI) / 180.0;
@@ -399,7 +465,7 @@ const LidarVisualizer = () => {
                         // ドーナツ領域判定
                         const angleDeg = i - 90;
                         const isInDonutAngle = angleDeg >= startAngle && angleDeg <= endAngle;
-                        const isInDonutRadius = distance >= innerRadius && distance <= outerRadius;
+                        const isInDonutRadius = distance >= innerR && distance <= outerR;
                         const isInDonut = isInDonutAngle && isInDonutRadius;
 
                         if (isInDonut) {
@@ -422,10 +488,14 @@ const LidarVisualizer = () => {
 
                 // ピアノ鍵盤の足検出
                 const detectedNotes = [];
-                const { innerRadius, outerRadius, startAngle, endAngle, detectionThreshold } = PIANO_CONFIG;
+                const startAngle = PIANO_CONFIG.startAngle;
+                const endAngle = PIANO_CONFIG.endAngle;
+                const innerR = innerRadiusRef.current;
+                const outerR = outerRadiusRef.current;
+                const detectionThresh = detectionThresholdRef.current;
                 const angleRange = endAngle - startAngle;
                 const degreesPerKey = angleRange / PIANO_NOTES.length;
-                const boundaryMarginRatio = 0.2; // 鍵盤の境界20%を除外（左右各10%）
+                const boundaryMarginRatio = boundaryMarginRatioRef.current; // 鍵盤の境界割合（左右各 margin/2 を除外）
 
                 for (let i = 0; i < 360; i++) {
                     const angleDeg = i - 90; // LiDARの0度を前方に調整
@@ -434,7 +504,7 @@ const LidarVisualizer = () => {
                     // ピアノの角度範囲内かチェック
                     if (angleDeg >= startAngle && angleDeg <= endAngle) {
                         // 距離がピアノの範囲内かチェック
-                        if (distance >= innerRadius && distance <= outerRadius) {
+                        if (distance >= innerR && distance <= outerR) {
                             // どの鍵盤か判定
                             const relativeAngle = angleDeg - startAngle;
                             const keyIndex = Math.floor(relativeAngle / degreesPerKey);
@@ -768,6 +838,27 @@ const LidarVisualizer = () => {
         scene.add(centerSprite);
         centerTextRef.current = centerSprite;
 
+        // 可視化用: 検出リング（内側/外側）を作成
+        const createRing = (radius, color = 0x00ff00) => {
+            const segments = 128;
+            const positions = new Float32Array(segments * 3);
+            for (let i = 0; i < segments; i++) {
+                const t = (i / segments) * Math.PI * 2;
+                positions[i * 3] = Math.cos(t) * radius;
+                positions[i * 3 + 1] = 0.02; // 少し上に表示
+                positions[i * 3 + 2] = -Math.sin(t) * radius;
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const mat = new THREE.LineBasicMaterial({ color, linewidth: 2, transparent: true, opacity: 0.6 });
+            const line = new THREE.LineLoop(geo, mat);
+            scene.add(line);
+            return line;
+        };
+
+        innerRingRef.current = createRing(innerRadiusRef.current, 0x00ff00);
+        outerRingRef.current = createRing(outerRadiusRef.current, 0x00aaee);
+
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(360 * 3);
         const colors = new Float32Array(360 * 3);
@@ -950,11 +1041,76 @@ const LidarVisualizer = () => {
                 <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
                     🎹 ピアノペダル設定
                 </div>
-                <div>内側半径: {PIANO_CONFIG.innerRadius}m</div>
-                <div>外側半径: {PIANO_CONFIG.outerRadius}m</div>
-                <div>開始角度: {PIANO_CONFIG.startAngle}°</div>
-                <div>終了角度: {PIANO_CONFIG.endAngle}°</div>
-                <div>検出閾値: {PIANO_CONFIG.detectionThreshold}m</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div>内側半径: <strong>{innerRadius.toFixed(2)} m</strong></div>
+                    <input
+                        type="range"
+                        min={0.1}
+                        max={3.0}
+                        step={0.01}
+                        value={innerRadius}
+                        onChange={(e) => {
+                            e.stopPropagation();
+                            const v = parseFloat(e.target.value);
+                            // outer が内側より小さくならないように調整
+                            const newOuter = Math.max(outerRadius, v + 0.01);
+                            setInnerRadius(v);
+                            setOuterRadius(newOuter);
+                            innerRadiusRef.current = v;
+                            outerRadiusRef.current = newOuter;
+                        }}
+                    />
+
+                    <div>外側半径: <strong>{outerRadius.toFixed(2)} m</strong></div>
+                    <input
+                        type="range"
+                        min={0.11}
+                        max={4.0}
+                        step={0.01}
+                        value={outerRadius}
+                        onChange={(e) => {
+                            e.stopPropagation();
+                            let v = parseFloat(e.target.value);
+                            // outer が inner より必ず大きくなるように
+                            if (v <= innerRadius) v = innerRadius + 0.01;
+                            setOuterRadius(v);
+                            outerRadiusRef.current = v;
+                        }}
+                    />
+
+                    <div>開始角度: {PIANO_CONFIG.startAngle}°</div>
+                    <div>終了角度: {PIANO_CONFIG.endAngle}°</div>
+
+                    <div>検出閾値: <strong>{detectionThreshold.toFixed(2)} m</strong></div>
+                    <input
+                        type="range"
+                        min={0.01}
+                        max={1.0}
+                        step={0.01}
+                        value={detectionThreshold}
+                        onChange={(e) => {
+                            e.stopPropagation();
+                            const v = parseFloat(e.target.value);
+                            setDetectionThreshold(v);
+                            detectionThresholdRef.current = v;
+                        }}
+                    />
+
+                    <div>鍵盤境界除外割合: <strong>{(boundaryMarginRatio * 100).toFixed(0)}%</strong></div>
+                    <input
+                        type="range"
+                        min={0}
+                        max={0.5}
+                        step={0.01}
+                        value={boundaryMarginRatio}
+                        onChange={(e) => {
+                            e.stopPropagation();
+                            const v = parseFloat(e.target.value);
+                            setBoundaryMarginRatio(v);
+                            boundaryMarginRatioRef.current = v;
+                        }}
+                    />
+                </div>
                 <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
                     鍵盤数: {PIANO_NOTES.length}
                 </div>
