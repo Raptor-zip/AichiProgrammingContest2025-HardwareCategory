@@ -16,26 +16,32 @@ const PIANO_CONFIG = {
     outerRadius: 0.8,      // 外径 (m)
     startAngle: 90,       // 開始角度 (度)
     endAngle: 270,          // 終了角度 (度)
-    detectionThreshold: 0.2, // 検出閾値 (m) - この距離以下なら足を検出
 };
 
 // ピアノ音階定義 (純正律 - 整数比)
 // C4 = 264 Hz (基準音を調整してキリの良い数値に)
 const BASE_FREQ = 264; // C4
 
+// 音域設定
+const PIANO_RANGE = {
+    startNote: 'B3',  // 開始音
+    endNote: 'C4',    // 終了音
+};
+
 const PIANO_NOTES = [
-    { note: 'C4', freq: BASE_FREQ * 1, name: 'ド', isBlack: false },      // 1/1
-    { note: 'C#4', freq: BASE_FREQ * 16 / 15, name: 'ド#', isBlack: true },     // 16/15
+    { note: 'B3', freq: BASE_FREQ * 15 / 16, name: 'シ', isBlack: false },    // 15/16 (1オクターブ下の15/8)
+    { note: 'C4', freq: BASE_FREQ * 1, name: 'ド', isBlack: false },          // 1/1
+    { note: 'C#4', freq: BASE_FREQ * 16 / 15, name: 'ド#', isBlack: true },   // 16/15
     { note: 'D4', freq: BASE_FREQ * 9 / 8, name: 'レ', isBlack: false },      // 9/8
     { note: 'D#4', freq: BASE_FREQ * 6 / 5, name: 'レ#', isBlack: true },     // 6/5
     { note: 'E4', freq: BASE_FREQ * 5 / 4, name: 'ミ', isBlack: false },      // 5/4
     { note: 'F4', freq: BASE_FREQ * 4 / 3, name: 'フ', isBlack: false },      // 4/3
-    { note: 'F#4', freq: BASE_FREQ * 45 / 32, name: 'フ#', isBlack: true },     // 45/32
+    { note: 'F#4', freq: BASE_FREQ * 45 / 32, name: 'フ#', isBlack: true },   // 45/32
     { note: 'G4', freq: BASE_FREQ * 3 / 2, name: 'ソ', isBlack: false },      // 3/2
     { note: 'G#4', freq: BASE_FREQ * 8 / 5, name: 'ソ#', isBlack: true },     // 8/5
     { note: 'A4', freq: BASE_FREQ * 5 / 3, name: 'ラ', isBlack: false },      // 5/3
-    { note: 'A#4', freq: BASE_FREQ * 16 / 9, name: 'ラ#', isBlack: true },     // 16/9
-    { note: 'B4', freq: BASE_FREQ * 15 / 8, name: 'シ', isBlack: false },      // 15/8
+    { note: 'A#4', freq: BASE_FREQ * 16 / 9, name: 'ラ#', isBlack: true },    // 16/9
+    { note: 'B4', freq: BASE_FREQ * 15 / 8, name: 'シ', isBlack: false },     // 15/8
 ];
 
 // Web Audio API用の音声生成
@@ -152,7 +158,6 @@ const LidarVisualizer = () => {
     // 可変パラメータ用のrefs
     const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
     const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
-    const detectionThresholdRef = useRef(PIANO_CONFIG.detectionThreshold);
     const boundaryMarginRatioRef = useRef(0.2);
     const innerRingRef = useRef(null);
     const outerRingRef = useRef(null);
@@ -262,7 +267,6 @@ const LidarVisualizer = () => {
     // 可変な音検出レンジ（UIで変更可能にする）
     const [innerRadius, setInnerRadius] = useState(PIANO_CONFIG.innerRadius);
     const [outerRadius, setOuterRadius] = useState(PIANO_CONFIG.outerRadius);
-    const [detectionThreshold, setDetectionThreshold] = useState(PIANO_CONFIG.detectionThreshold);
     const [boundaryMarginRatio, setBoundaryMarginRatio] = useState(0.2);
 
     // 反転/回転フラグのref版（WebSocketハンドラのクロージャ問題を回避）
@@ -278,7 +282,6 @@ const LidarVisualizer = () => {
     // 可変パラメータ state -> ref 同期
     useEffect(() => { innerRadiusRef.current = innerRadius; }, [innerRadius]);
     useEffect(() => { outerRadiusRef.current = outerRadius; }, [outerRadius]);
-    useEffect(() => { detectionThresholdRef.current = detectionThreshold; }, [detectionThreshold]);
     useEffect(() => { boundaryMarginRatioRef.current = boundaryMarginRatio; }, [boundaryMarginRatio]);
 
     // inner/outer ring を再生成して見た目を更新
@@ -492,7 +495,6 @@ const LidarVisualizer = () => {
                 const endAngle = PIANO_CONFIG.endAngle;
                 const innerR = innerRadiusRef.current;
                 const outerR = outerRadiusRef.current;
-                const detectionThresh = detectionThresholdRef.current;
                 const angleRange = endAngle - startAngle;
                 const degreesPerKey = angleRange / PIANO_NOTES.length;
                 const boundaryMarginRatio = boundaryMarginRatioRef.current; // 鍵盤の境界割合（左右各 margin/2 を除外）
@@ -1081,20 +1083,6 @@ const LidarVisualizer = () => {
                     <div>開始角度: {PIANO_CONFIG.startAngle}°</div>
                     <div>終了角度: {PIANO_CONFIG.endAngle}°</div>
 
-                    <div>検出閾値: <strong>{detectionThreshold.toFixed(2)} m</strong></div>
-                    <input
-                        type="range"
-                        min={0.01}
-                        max={1.0}
-                        step={0.01}
-                        value={detectionThreshold}
-                        onChange={(e) => {
-                            e.stopPropagation();
-                            const v = parseFloat(e.target.value);
-                            setDetectionThreshold(v);
-                            detectionThresholdRef.current = v;
-                        }}
-                    />
 
                     <div>鍵盤境界除外割合: <strong>{(boundaryMarginRatio * 100).toFixed(0)}%</strong></div>
                     <input
