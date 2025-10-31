@@ -144,8 +144,22 @@ const LidarVisualizer = () => {
     const pingSeqRef = useRef(0);
     const synthRef = useRef(null);
     const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
+    const pianoEdgesRef = useRef([]); // ピアノ鍵盤の境界線配列
     const activeNotesRef = useRef(new Set()); // 現在鳴っている音
     const octaveShiftRef = useRef(0); // オクターブシフトの現在値（ref版）
+
+    // 音名をオクターブシフトに応じて変換する関数
+    const shiftNoteName = (noteName, shift) => {
+        // 例: "C4" -> ["C", "4"]
+        const match = noteName.match(/^([A-G]#?)(\d+)$/);
+        if (!match) return noteName;
+
+        const note = match[1]; // "C", "D#" など
+        const octave = parseInt(match[2]); // 4, 5 など
+        const newOctave = octave + shift;
+
+        return `${note}${newOctave}`;
+    };
 
     const [wsStatus, setWsStatus] = useState('disconnected');
     const [frameCount, setFrameCount] = useState(0);
@@ -391,12 +405,19 @@ const LidarVisualizer = () => {
                     // デフォルトのY位置
                     const defaultY = note.isBlack ? 0.02 : 0.01;
                     const pressedY = note.isBlack ? -0.01 : -0.02; // 押されたときは下に移動
+                    const defaultEdgeY = note.isBlack ? 0.021 : 0.011;
+                    const pressedEdgeY = note.isBlack ? -0.009 : -0.019; // 境界線も一緒に移動
 
                     if (isActive) {
                         // 押されている状態
                         keyMesh.material.color.setHex(0xffff00); // 黄色（踏まれている）
                         keyMesh.material.emissive.setHex(0xff8800);
                         keyMesh.position.y = pressedY; // 下に移動
+
+                        // 境界線も下に移動
+                        if (pianoEdgesRef.current[index]) {
+                            pianoEdgesRef.current[index].position.y = pressedEdgeY;
+                        }
                     } else {
                         // デフォルトの状態に戻す
                         if (note.isBlack) {
@@ -407,6 +428,11 @@ const LidarVisualizer = () => {
                             keyMesh.material.emissive.setHex(0x000000);
                         }
                         keyMesh.position.y = defaultY; // 元の位置に戻す
+
+                        // 境界線も元の位置に戻す
+                        if (pianoEdgesRef.current[index]) {
+                            pianoEdgesRef.current[index].position.y = defaultEdgeY;
+                        }
                     }
                 });
 
@@ -504,6 +530,7 @@ const LidarVisualizer = () => {
         const angleRange = endAngle - startAngle;
         const degreesPerKey = angleRange / PIANO_NOTES.length;
         const keys = [];
+        const edges = [];
 
         PIANO_NOTES.forEach((note, index) => {
             const startDeg = startAngle + (index * degreesPerKey);
@@ -566,10 +593,11 @@ const LidarVisualizer = () => {
                 color: note.isBlack ? 0x666666 : 0x888888,
                 linewidth: 2
             });
-            const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
-            edges.rotation.x = -Math.PI / 2;
-            edges.position.y = note.isBlack ? 0.021 : 0.011; // 鍵盤より少し上
-            scene.add(edges);
+            const edgeLine = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+            edgeLine.rotation.x = -Math.PI / 2;
+            edgeLine.position.y = note.isBlack ? 0.021 : 0.011; // 鍵盤より少し上
+            scene.add(edgeLine);
+            edges.push(edgeLine);
 
             // 鍵盤に音名テキストを追加
             const canvas = document.createElement('canvas');
@@ -612,6 +640,7 @@ const LidarVisualizer = () => {
         });
 
         pianoKeysRef.current = keys;
+        pianoEdgesRef.current = edges;
 
         // 照明を追加（MeshStandardMaterialのため）
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -820,7 +849,7 @@ const LidarVisualizer = () => {
                 </div>
                 <div style={{ fontSize: '18px', marginTop: '10px', opacity: 0.6 }}>
                     {currentNotes.length > 0
-                        ? currentNotes.map(n => n.note).join(', ')
+                        ? currentNotes.map(n => shiftNoteName(n.note, octaveShift)).join(', ')
                         : '足を鍵盤に乗せてください'
                     }
                 </div>
