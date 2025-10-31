@@ -197,6 +197,8 @@ const LidarVisualizer = () => {
     const wsRef = useRef(null);
     const pingTimerRef = useRef(null);
     const pingTimeoutRef = useRef(null); // Pingタイムアウト監視用
+    const dataTimeoutRef = useRef(null); // データフレームタイムアウト監視用
+    const lastDataReceivedRef = useRef(Date.now()); // 最後にデータを受信した時刻
     const pingSeqRef = useRef(0);
     const pingHistoryRef = useRef([]); // Ping履歴（直近30秒分） { timestamp: number, rtt: number }[]
     const synthRef = useRef(null);
@@ -211,6 +213,12 @@ const LidarVisualizer = () => {
     const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
     const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
     const boundaryMarginRatioRef = useRef(0.2);
+    // WebSocket再接続用
+    const reconnectAttemptsRef = useRef(0); // 再接続試行回数
+    const reconnectTimerRef = useRef(null); // 再接続タイマー
+    const connectionCheckTimerRef = useRef(null); // 接続状態チェックタイマー
+    const maxReconnectAttempts = 5; // 最大再接続試行回数（5回失敗したらリロード）
+    const dataTimeoutDuration = 5000; // データ受信タイムアウト (5秒)
 
     // 円の中心のテキストを更新する関数
     const updateCenterText = (notes) => {
@@ -523,311 +531,416 @@ const LidarVisualizer = () => {
         const h = window.location.hostname || '192.168.4.1';
         const url = `ws://${h}:81/`;
 
-        console.log('Connecting to WebSocket:', url);
-        setWsStatus('connecting');
-        const ws = new WebSocket(url);
-        ws.binaryType = 'arraybuffer';
-        wsRef.current = ws;
+        // WebSocket接続関数
+        const connectWebSocket = () => {
+            console.log(`Connecting to WebSocket: ${url} (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})`);
+            setWsStatus('connecting');
 
-        ws.onopen = () => {
-            console.log('WebSocket connected');
-            setWsStatus('connected');
+            const ws = new WebSocket(url);
+            ws.binaryType = 'arraybuffer';
+            wsRef.current = ws;
 
-            // 接続後、自動的にPing送信開始（1秒間隔）
-            pingSeqRef.current = 0;
-            pingHistoryRef.current = []; // Ping履歴をクリア
-            setPingStats({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                setWsStatus('connected');
+                reconnectAttemptsRef.current = 0; // 接続成功したら再接続カウンタをリセット
+                lastDataReceivedRef.current = Date.now(); // データ受信時刻を初期化
 
-            pingTimerRef.current = setInterval(() => {
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                    pingSeqRef.current++;
-                    const payload = { type: 'ping', id: pingSeqRef.current, t: nowMs() };
-                    wsRef.current.send(JSON.stringify(payload));
+                // 接続後、自動的にPing送信開始（1秒間隔）
+                pingSeqRef.current = 0;
+                pingHistoryRef.current = []; // Ping履歴をクリア
+                setPingStats({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
 
-                    // 3秒以内にPong応答がない場合、ページをリロード
-                    if (pingTimeoutRef.current) {
-                        clearTimeout(pingTimeoutRef.current);
+                pingTimerRef.current = setInterval(() => {
+                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                        pingSeqRef.current++;
+                        const payload = { type: 'ping', id: pingSeqRef.current, t: nowMs() };
+                        wsRef.current.send(JSON.stringify(payload));
+
+                        // 5秒以内にPong応答がない場合、再接続を試みる
+                        if (pingTimeoutRef.current) {
+                            clearTimeout(pingTimeoutRef.current);
+                        }
+                        pingTimeoutRef.current = setTimeout(() => {
+                            console.warn('Ping timeout (5000ms) - No response from server. Reconnecting...');
+                            if (wsRef.current) {
+                                wsRef.current.close();
+                            }
+                        }, 5000);
                     }
-                    pingTimeoutRef.current = setTimeout(() => {
-                        console.warn('Ping timeout (3000ms) - Reloading page...');
+                }, 1000); // 1秒間隔でPing送信
+
+                // データフレーム受信監視タイマー (5秒間データが来なかったら再接続)
+                if (dataTimeoutRef.current) {
+                    clearInterval(dataTimeoutRef.current);
+                }
+                dataTimeoutRef.current = setInterval(() => {
+                    const now = Date.now();
+                    const timeSinceLastData = now - lastDataReceivedRef.current;
+
+                    if (timeSinceLastData > dataTimeoutDuration) {
+                        console.warn(`No LiDAR data received for ${timeSinceLastData}ms. Reconnecting...`);
+                        if (wsRef.current) {
+                            wsRef.current.close();
+                        }
+                    }
+                }, 2000); // 2秒ごとにチェック
+
+                // WebSocket接続状態の定期チェック (3秒ごと)
+                if (connectionCheckTimerRef.current) {
+                    clearInterval(connectionCheckTimerRef.current);
+                }
+                connectionCheckTimerRef.current = setInterval(() => {
+                    if (wsRef.current) {
+                        const state = wsRef.current.readyState;
+                        if (state === WebSocket.CLOSING || state === WebSocket.CLOSED) {
+                            console.warn('WebSocket state is CLOSING/CLOSED. Triggering reconnect...');
+                            clearInterval(connectionCheckTimerRef.current);
+                            connectionCheckTimerRef.current = null;
+                            // onclose が自動的に呼ばれるはずだが、念のため明示的にclose
+                            if (state === WebSocket.CLOSING) {
+                                wsRef.current.close();
+                            }
+                        }
+                    }
+                }, 3000); // 3秒ごとにチェック
+
+                setPingEnabled(true);
+            };
+
+            ws.onclose = (e) => {
+                console.log('WebSocket closed:', e.code, e.reason);
+                setWsStatus('disconnected');
+
+                // すべてのタイマーをクリア
+                if (pingTimerRef.current) {
+                    clearInterval(pingTimerRef.current);
+                    pingTimerRef.current = null;
+                }
+                if (pingTimeoutRef.current) {
+                    clearTimeout(pingTimeoutRef.current);
+                    pingTimeoutRef.current = null;
+                }
+                if (dataTimeoutRef.current) {
+                    clearInterval(dataTimeoutRef.current);
+                    dataTimeoutRef.current = null;
+                }
+                if (connectionCheckTimerRef.current) {
+                    clearInterval(connectionCheckTimerRef.current);
+                    connectionCheckTimerRef.current = null;
+                }
+
+                // 再接続を試みる
+                reconnectAttemptsRef.current++;
+                if (reconnectAttemptsRef.current < maxReconnectAttempts) {
+                    const delay = Math.min(1000 * reconnectAttemptsRef.current, 5000); // 1秒、2秒、3秒、4秒、5秒...最大5秒
+                    console.log(`Reconnecting in ${delay}ms... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
+                    reconnectTimerRef.current = setTimeout(() => {
+                        connectWebSocket();
+                    }, delay);
+                } else {
+                    console.error(`Failed to reconnect after ${maxReconnectAttempts} attempts. Reloading page in 2 seconds...`);
+                    setTimeout(() => {
                         window.location.reload();
-                    }, 3000);
+                    }, 2000);
                 }
-            }, 1000); // 1秒間隔でPing送信
+            };
 
-            setPingEnabled(true);
-        };
+            ws.onerror = (e) => {
+                console.error('WebSocket error:', e);
+                setWsStatus('error');
+            };
 
-        ws.onclose = (e) => {
-            console.log('WebSocket closed:', e.code, e.reason);
-            setWsStatus('disconnected');
-        };
+            let receivedFrames = 0;
+            let lastFpsUpdate = Date.now();
 
-        ws.onerror = (e) => {
-            console.error('WebSocket error:', e);
-            setWsStatus('error');
-        };
+            ws.onmessage = (event) => {
+                // データ受信時刻を更新
+                lastDataReceivedRef.current = Date.now();
 
-        let receivedFrames = 0;
-        let lastFpsUpdate = Date.now();
+                // バイナリデータ(LiDAR)の処理
+                if (event.data instanceof ArrayBuffer) {
+                    const buffer = new Uint8Array(event.data);
 
-        ws.onmessage = (event) => {
-            // バイナリデータ(LiDAR)の処理
-            if (event.data instanceof ArrayBuffer) {
-                const buffer = new Uint8Array(event.data);
+                    const type = buffer[0];
+                    const pointCount = new Uint16Array(buffer.buffer, 2, 1)[0];
+                    const timestamp = new Uint32Array(buffer.buffer, 4, 1)[0];
 
-                const type = buffer[0];
-                const pointCount = new Uint16Array(buffer.buffer, 2, 1)[0];
-                const timestamp = new Uint32Array(buffer.buffer, 4, 1)[0];
-
-                if (type !== 0x01 || pointCount !== 360) {
-                    console.warn('Invalid LiDAR data format');
-                    return;
-                }
-
-                const distances = new Float32Array(buffer.buffer, 8, pointCount);
-
-                // 変換を適用（回転・反転） - ref経由で最新値を読む
-                const transformedDistances = new Float32Array(360);
-                for (let i = 0; i < 360; i++) {
-                    let transformedIndex = i;
-
-                    // 180度回転
-                    if (rotate180Ref.current) {
-                        transformedIndex = (transformedIndex + 180) % 360;
+                    if (type !== 0x01 || pointCount !== 360) {
+                        console.warn('Invalid LiDAR data format');
+                        return;
                     }
 
-                    // 左右反転（Y軸周りの反転 = X座標反転）
-                    if (flipHorizontalRef.current) {
-                        transformedIndex = (360 - transformedIndex) % 360;
+                    const distances = new Float32Array(buffer.buffer, 8, pointCount);
+
+                    // 変換を適用（回転・反転） - ref経由で最新値を読む
+                    const transformedDistances = new Float32Array(360);
+                    for (let i = 0; i < 360; i++) {
+                        let transformedIndex = i;
+
+                        // 180度回転
+                        if (rotate180Ref.current) {
+                            transformedIndex = (transformedIndex + 180) % 360;
+                        }
+
+                        // 左右反転（Y軸周りの反転 = X座標反転）
+                        if (flipHorizontalRef.current) {
+                            transformedIndex = (360 - transformedIndex) % 360;
+                        }
+
+                        // 上下反転（X軸周りの反転 = Z座標反転）
+                        if (flipVerticalRef.current) {
+                            transformedIndex = (180 - transformedIndex + 360) % 360;
+                        }
+
+                        transformedDistances[i] = distances[transformedIndex];
                     }
 
-                    // 上下反転（X軸周りの反転 = Z座標反転）
-                    if (flipVerticalRef.current) {
-                        transformedIndex = (180 - transformedIndex + 360) % 360;
+                    // 点群を更新
+                    if (pointsRef.current) {
+                        const positions = pointsRef.current.geometry.attributes.position.array;
+                        const colors = pointsRef.current.geometry.attributes.color.array;
+                        const startAngle = PIANO_CONFIG.startAngle;
+                        const endAngle = PIANO_CONFIG.endAngle;
+                        const innerR = innerRadiusRef.current;
+                        const outerR = outerRadiusRef.current;
+
+                        for (let i = 0; i < 360; i++) {
+                            const angle = (i * Math.PI) / 180.0;
+                            const distance = transformedDistances[i];
+
+                            positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
+                            positions[i * 3 + 1] = 0.1; // 鍵盤より上に配置
+                            positions[i * 3 + 2] = Math.sin(angle) * distance;
+
+                            // ドーナツ領域判定
+                            const angleDeg = i - 90;
+                            const isInDonutAngle = angleDeg >= startAngle && angleDeg <= endAngle;
+                            const isInDonutRadius = distance >= innerR && distance <= outerR;
+                            const isInDonut = isInDonutAngle && isInDonutRadius;
+
+                            if (isInDonut) {
+                                // ドーナツ領域内: 明るく目立つ色（黄色系）
+                                colors[i * 3] = 1.0;     // R
+                                colors[i * 3 + 1] = 1.0; // G
+                                colors[i * 3 + 2] = 0.0; // B
+                            } else {
+                                // ドーナツ領域外: 暗く半透明（青灰色）
+                                const normalizedDistance = Math.min(distance / 3.0, 1.0);
+                                colors[i * 3] = normalizedDistance * 0.3;
+                                colors[i * 3 + 1] = normalizedDistance * 0.3;
+                                colors[i * 3 + 2] = normalizedDistance * 0.5;
+                            }
+                        }
+
+                        pointsRef.current.geometry.attributes.position.needsUpdate = true;
+                        pointsRef.current.geometry.attributes.color.needsUpdate = true;
                     }
 
-                    transformedDistances[i] = distances[transformedIndex];
-                }
-
-                // 点群を更新
-                if (pointsRef.current) {
-                    const positions = pointsRef.current.geometry.attributes.position.array;
-                    const colors = pointsRef.current.geometry.attributes.color.array;
+                    // ピアノ鍵盤の足検出
+                    const detectedNotes = [];
                     const startAngle = PIANO_CONFIG.startAngle;
                     const endAngle = PIANO_CONFIG.endAngle;
                     const innerR = innerRadiusRef.current;
                     const outerR = outerRadiusRef.current;
+                    const currentPianoNotes = pianoNotesRef.current;
+                    const angleRange = endAngle - startAngle;
+                    const degreesPerKey = angleRange / currentPianoNotes.length;
+                    const boundaryMarginRatio = boundaryMarginRatioRef.current; // 鍵盤の境界割合（左右各 margin/2 を除外）
 
                     for (let i = 0; i < 360; i++) {
-                        const angle = (i * Math.PI) / 180.0;
+                        const angleDeg = i - 90; // LiDARの0度を前方に調整
                         const distance = transformedDistances[i];
 
-                        positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
-                        positions[i * 3 + 1] = 0.1; // 鍵盤より上に配置
-                        positions[i * 3 + 2] = Math.sin(angle) * distance;
+                        // ピアノの角度範囲内かチェック
+                        if (angleDeg >= startAngle && angleDeg <= endAngle) {
+                            // 距離がピアノの範囲内かチェック
+                            if (distance >= innerR && distance <= outerR) {
+                                // どの鍵盤か判定
+                                const relativeAngle = angleDeg - startAngle;
+                                const keyIndex = Math.floor(relativeAngle / degreesPerKey);
 
-                        // ドーナツ領域判定
-                        const angleDeg = i - 90;
-                        const isInDonutAngle = angleDeg >= startAngle && angleDeg <= endAngle;
-                        const isInDonutRadius = distance >= innerR && distance <= outerR;
-                        const isInDonut = isInDonutAngle && isInDonutRadius;
+                                if (keyIndex >= 0 && keyIndex < currentPianoNotes.length) {
+                                    // 鍵盤内の相対位置を計算（0.0〜1.0）
+                                    const positionInKey = (relativeAngle - keyIndex * degreesPerKey) / degreesPerKey;
 
-                        if (isInDonut) {
-                            // ドーナツ領域内: 明るく目立つ色（黄色系）
-                            colors[i * 3] = 1.0;     // R
-                            colors[i * 3 + 1] = 1.0; // G
-                            colors[i * 3 + 2] = 0.0; // B
-                        } else {
-                            // ドーナツ領域外: 暗く半透明（青灰色）
-                            const normalizedDistance = Math.min(distance / 3.0, 1.0);
-                            colors[i * 3] = normalizedDistance * 0.3;
-                            colors[i * 3 + 1] = normalizedDistance * 0.3;
-                            colors[i * 3 + 2] = normalizedDistance * 0.5;
-                        }
-                    }
-
-                    pointsRef.current.geometry.attributes.position.needsUpdate = true;
-                    pointsRef.current.geometry.attributes.color.needsUpdate = true;
-                }
-
-                // ピアノ鍵盤の足検出
-                const detectedNotes = [];
-                const startAngle = PIANO_CONFIG.startAngle;
-                const endAngle = PIANO_CONFIG.endAngle;
-                const innerR = innerRadiusRef.current;
-                const outerR = outerRadiusRef.current;
-                const currentPianoNotes = pianoNotesRef.current;
-                const angleRange = endAngle - startAngle;
-                const degreesPerKey = angleRange / currentPianoNotes.length;
-                const boundaryMarginRatio = boundaryMarginRatioRef.current; // 鍵盤の境界割合（左右各 margin/2 を除外）
-
-                for (let i = 0; i < 360; i++) {
-                    const angleDeg = i - 90; // LiDARの0度を前方に調整
-                    const distance = transformedDistances[i];
-
-                    // ピアノの角度範囲内かチェック
-                    if (angleDeg >= startAngle && angleDeg <= endAngle) {
-                        // 距離がピアノの範囲内かチェック
-                        if (distance >= innerR && distance <= outerR) {
-                            // どの鍵盤か判定
-                            const relativeAngle = angleDeg - startAngle;
-                            const keyIndex = Math.floor(relativeAngle / degreesPerKey);
-
-                            if (keyIndex >= 0 && keyIndex < currentPianoNotes.length) {
-                                // 鍵盤内の相対位置を計算（0.0〜1.0）
-                                const positionInKey = (relativeAngle - keyIndex * degreesPerKey) / degreesPerKey;
-
-                                // 境界マージンを除外（中央80%のみ有効）
-                                const margin = boundaryMarginRatio / 2;
-                                if (positionInKey >= margin && positionInKey <= (1.0 - margin)) {
-                                    const note = currentPianoNotes[keyIndex];
-                                    if (!detectedNotes.find(n => n.note === note.note)) {
-                                        detectedNotes.push(note);
+                                    // 境界マージンを除外（中央80%のみ有効）
+                                    const margin = boundaryMarginRatio / 2;
+                                    if (positionInKey >= margin && positionInKey <= (1.0 - margin)) {
+                                        const note = currentPianoNotes[keyIndex];
+                                        if (!detectedNotes.find(n => n.note === note.note)) {
+                                            detectedNotes.push(note);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                // 音の再生・停止
-                if (synthRef.current) {
-                    // 新しく検出された音を再生
-                    detectedNotes.forEach(note => {
-                        if (!activeNotesRef.current.has(note.note)) {
-                            console.log(`Playing: ${note.note}, freq: ${note.freq.toFixed(2)}Hz`);
-                            synthRef.current.playNote(note.freq, note.note);
-                            activeNotesRef.current.add(note.note);
+                    // 音の再生・停止
+                    if (synthRef.current) {
+                        // 新しく検出された音を再生
+                        detectedNotes.forEach(note => {
+                            if (!activeNotesRef.current.has(note.note)) {
+                                console.log(`Playing: ${note.note}, freq: ${note.freq.toFixed(2)}Hz`);
+                                synthRef.current.playNote(note.freq, note.note);
+                                activeNotesRef.current.add(note.note);
+                            }
+                        });
+
+                        // 検出されなくなった音を停止
+                        const detectedNoteNames = new Set(detectedNotes.map(n => n.note));
+                        for (const noteName of activeNotesRef.current) {
+                            if (!detectedNoteNames.has(noteName)) {
+                                synthRef.current.stopNote(noteName);
+                                activeNotesRef.current.delete(noteName);
+                            }
+                        }
+                    }
+
+                    // 鍵盤の色と位置を更新（3D効果）
+                    pianoKeysRef.current.forEach((keyMesh, index) => {
+                        const note = PIANO_NOTES[index];
+                        const isActive = detectedNotes.some(n => n.note === note.note);
+
+                        // デフォルトのY位置
+                        const defaultY = note.isBlack ? 0.02 : 0.01;
+                        const pressedY = note.isBlack ? -0.01 : -0.02; // 押されたときは下に移動
+                        const defaultEdgeY = note.isBlack ? 0.021 : 0.011;
+                        const pressedEdgeY = note.isBlack ? -0.009 : -0.019; // 境界線も一緒に移動
+
+                        if (isActive) {
+                            // 押されている状態
+                            keyMesh.material.color.setHex(0xffff00); // 黄色（踏まれている）
+                            keyMesh.material.emissive.setHex(0xff8800);
+                            keyMesh.position.y = pressedY; // 下に移動
+
+                            // 境界線も下に移動
+                            if (pianoEdgesRef.current[index]) {
+                                pianoEdgesRef.current[index].position.y = pressedEdgeY;
+                            }
+                            // ラベルも鍵盤に追従して下に移動
+                            if (pianoLabelsRef.current[index]) {
+                                const defaultLabelY = note.isBlack ? 0.08 : 0.07;
+                                const labelOffset = defaultLabelY - defaultY; // ラベルと鍵盤の相対オフセット
+                                pianoLabelsRef.current[index].position.y = pressedY + labelOffset;
+                            }
+                        } else {
+                            // デフォルトの状態に戻す
+                            if (note.isBlack) {
+                                keyMesh.material.color.setHex(0x333333);
+                                keyMesh.material.emissive.setHex(0x000000);
+                            } else {
+                                keyMesh.material.color.setHex(0xffffff);
+                                keyMesh.material.emissive.setHex(0x000000);
+                            }
+                            keyMesh.position.y = defaultY; // 元の位置に戻す
+
+                            // 境界線も元の位置に戻す
+                            if (pianoEdgesRef.current[index]) {
+                                pianoEdgesRef.current[index].position.y = defaultEdgeY;
+                            }
+                            // ラベルも元の位置に戻す
+                            if (pianoLabelsRef.current[index]) {
+                                const defaultLabelY = note.isBlack ? 0.08 : 0.07;
+                                pianoLabelsRef.current[index].position.y = defaultLabelY;
+                            }
                         }
                     });
 
-                    // 検出されなくなった音を停止
-                    const detectedNoteNames = new Set(detectedNotes.map(n => n.note));
-                    for (const noteName of activeNotesRef.current) {
-                        if (!detectedNoteNames.has(noteName)) {
-                            synthRef.current.stopNote(noteName);
-                            activeNotesRef.current.delete(noteName);
-                        }
+                    setCurrentNotes(detectedNotes);
+
+                    receivedFrames++;
+                    setFrameCount(prev => prev + 1);
+                    setLastTimestamp(timestamp);
+
+                    const now = Date.now();
+                    if (now - lastFpsUpdate >= 1000) {
+                        setFps(receivedFrames);
+                        receivedFrames = 0;
+                        lastFpsUpdate = now;
                     }
                 }
+                // テキストデータ(Ping)の処理
+                else if (typeof event.data === 'string') {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'ping') {
+                            // Pong応答を受信したので、タイムアウトタイマーをクリア
+                            if (pingTimeoutRef.current) {
+                                clearTimeout(pingTimeoutRef.current);
+                                pingTimeoutRef.current = null;
+                            }
 
-                // 鍵盤の色と位置を更新（3D効果）
-                pianoKeysRef.current.forEach((keyMesh, index) => {
-                    const note = PIANO_NOTES[index];
-                    const isActive = detectedNotes.some(n => n.note === note.note);
+                            const now = nowMs();
+                            const rtt = now - msg.t;
+                            setLastRTT(rtt);
 
-                    // デフォルトのY位置
-                    const defaultY = note.isBlack ? 0.02 : 0.01;
-                    const pressedY = note.isBlack ? -0.01 : -0.02; // 押されたときは下に移動
-                    const defaultEdgeY = note.isBlack ? 0.021 : 0.011;
-                    const pressedEdgeY = note.isBlack ? -0.009 : -0.019; // 境界線も一緒に移動
+                            // Ping履歴に追加（タイムスタンプ付き）
+                            pingHistoryRef.current.push({ timestamp: now, rtt });
 
-                    if (isActive) {
-                        // 押されている状態
-                        keyMesh.material.color.setHex(0xffff00); // 黄色（踏まれている）
-                        keyMesh.material.emissive.setHex(0xff8800);
-                        keyMesh.position.y = pressedY; // 下に移動
+                            // 30秒より古いデータを削除
+                            const thirtySecondsAgo = now - 30000; // 30秒 = 30000ms
+                            pingHistoryRef.current = pingHistoryRef.current.filter(
+                                entry => entry.timestamp >= thirtySecondsAgo
+                            );
 
-                        // 境界線も下に移動
-                        if (pianoEdgesRef.current[index]) {
-                            pianoEdgesRef.current[index].position.y = pressedEdgeY;
-                        }
-                        // ラベルも鍵盤に追従して下に移動
-                        if (pianoLabelsRef.current[index]) {
-                            const defaultLabelY = note.isBlack ? 0.08 : 0.07;
-                            const labelOffset = defaultLabelY - defaultY; // ラベルと鍵盤の相対オフセット
-                            pianoLabelsRef.current[index].position.y = pressedY + labelOffset;
-                        }
-                    } else {
-                        // デフォルトの状態に戻す
-                        if (note.isBlack) {
-                            keyMesh.material.color.setHex(0x333333);
-                            keyMesh.material.emissive.setHex(0x000000);
-                        } else {
-                            keyMesh.material.color.setHex(0xffffff);
-                            keyMesh.material.emissive.setHex(0x000000);
-                        }
-                        keyMesh.position.y = defaultY; // 元の位置に戻す
+                            // 直近30秒分の統計を計算
+                            if (pingHistoryRef.current.length > 0) {
+                                const rtts = pingHistoryRef.current.map(e => e.rtt);
+                                const min = Math.min(...rtts);
+                                const max = Math.max(...rtts);
+                                const sum = rtts.reduce((acc, val) => acc + val, 0);
+                                const avg = sum / rtts.length;
+                                const count = rtts.length;
 
-                        // 境界線も元の位置に戻す
-                        if (pianoEdgesRef.current[index]) {
-                            pianoEdgesRef.current[index].position.y = defaultEdgeY;
+                                setPingStats({ min, max, avg, count });
+                            }
                         }
-                        // ラベルも元の位置に戻す
-                        if (pianoLabelsRef.current[index]) {
-                            const defaultLabelY = note.isBlack ? 0.08 : 0.07;
-                            pianoLabelsRef.current[index].position.y = defaultLabelY;
-                        }
+                    } catch (e) {
+                        console.warn('Invalid JSON from server', e);
                     }
-                });
-
-                setCurrentNotes(detectedNotes);
-
-                receivedFrames++;
-                setFrameCount(prev => prev + 1);
-                setLastTimestamp(timestamp);
-
-                const now = Date.now();
-                if (now - lastFpsUpdate >= 1000) {
-                    setFps(receivedFrames);
-                    receivedFrames = 0;
-                    lastFpsUpdate = now;
                 }
-            }
-            // テキストデータ(Ping)の処理
-            else if (typeof event.data === 'string') {
-                try {
-                    const msg = JSON.parse(event.data);
-                    if (msg.type === 'ping') {
-                        // Pong応答を受信したので、タイムアウトタイマーをクリア
-                        if (pingTimeoutRef.current) {
-                            clearTimeout(pingTimeoutRef.current);
-                            pingTimeoutRef.current = null;
-                        }
-
-                        const now = nowMs();
-                        const rtt = now - msg.t;
-                        setLastRTT(rtt);
-
-                        // Ping履歴に追加（タイムスタンプ付き）
-                        pingHistoryRef.current.push({ timestamp: now, rtt });
-
-                        // 30秒より古いデータを削除
-                        const thirtySecondsAgo = now - 30000; // 30秒 = 30000ms
-                        pingHistoryRef.current = pingHistoryRef.current.filter(
-                            entry => entry.timestamp >= thirtySecondsAgo
-                        );
-
-                        // 直近30秒分の統計を計算
-                        if (pingHistoryRef.current.length > 0) {
-                            const rtts = pingHistoryRef.current.map(e => e.rtt);
-                            const min = Math.min(...rtts);
-                            const max = Math.max(...rtts);
-                            const sum = rtts.reduce((acc, val) => acc + val, 0);
-                            const avg = sum / rtts.length;
-                            const count = rtts.length;
-
-                            setPingStats({ min, max, avg, count });
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Invalid JSON from server', e);
-                }
-            }
+            };
         };
 
+        // 初回接続を開始
+        connectWebSocket();
+
         return () => {
-            console.log('Cleaning up WebSocket');
+            console.log('Cleaning up WebSocket and timers');
+
+            // すべてのタイマーをクリア
+            if (reconnectTimerRef.current) {
+                clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
+            }
+
             if (pingTimerRef.current) {
                 clearInterval(pingTimerRef.current);
+                pingTimerRef.current = null;
             }
+
             if (pingTimeoutRef.current) {
                 clearTimeout(pingTimeoutRef.current);
+                pingTimeoutRef.current = null;
             }
-            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-                ws.close();
+
+            if (dataTimeoutRef.current) {
+                clearInterval(dataTimeoutRef.current);
+                dataTimeoutRef.current = null;
             }
+
+            if (connectionCheckTimerRef.current) {
+                clearInterval(connectionCheckTimerRef.current);
+                connectionCheckTimerRef.current = null;
+            }
+
+            // WebSocketを閉じる
+            if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+                wsRef.current.close();
+            }
+
             // すべての音を停止
             if (synthRef.current) {
                 synthRef.current.stopAll();
