@@ -127,6 +127,9 @@ const LidarVisualizer = () => {
     const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
     const [octaveShift, setOctaveShift] = useState(0); // オクターブシフト (-2 ~ +2)
     const [waveType, setWaveType] = useState('sine'); // 波形タイプ
+    const [flipHorizontal, setFlipHorizontal] = useState(false); // 左右反転
+    const [flipVertical, setFlipVertical] = useState(false); // 上下反転
+    const [rotate180, setRotate180] = useState(false); // 180度回転
 
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
@@ -203,6 +206,29 @@ const LidarVisualizer = () => {
 
                 const distances = new Float32Array(buffer.buffer, 8, pointCount);
 
+                // 変換を適用（回転・反転）
+                const transformedDistances = new Float32Array(360);
+                for (let i = 0; i < 360; i++) {
+                    let transformedIndex = i;
+
+                    // 180度回転
+                    if (rotate180) {
+                        transformedIndex = (transformedIndex + 180) % 360;
+                    }
+
+                    // 左右反転（Y軸周りの反転 = X座標反転）
+                    if (flipHorizontal) {
+                        transformedIndex = (360 - transformedIndex) % 360;
+                    }
+
+                    // 上下反転（X軸周りの反転 = Z座標反転）
+                    if (flipVertical) {
+                        transformedIndex = (180 - transformedIndex + 360) % 360;
+                    }
+
+                    transformedDistances[i] = distances[transformedIndex];
+                }
+
                 // 点群を更新
                 if (pointsRef.current) {
                     const positions = pointsRef.current.geometry.attributes.position.array;
@@ -211,7 +237,7 @@ const LidarVisualizer = () => {
 
                     for (let i = 0; i < 360; i++) {
                         const angle = (i * Math.PI) / 180.0;
-                        const distance = distances[i];
+                        const distance = transformedDistances[i];
 
                         positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
                         positions[i * 3 + 1] = 0.1; // 鍵盤より上に配置
@@ -250,7 +276,7 @@ const LidarVisualizer = () => {
 
                 for (let i = 0; i < 360; i++) {
                     const angleDeg = i - 90; // LiDARの0度を前方に調整
-                    const distance = distances[i];
+                    const distance = transformedDistances[i];
 
                     // ピアノの角度範囲内かチェック
                     if (angleDeg >= startAngle && angleDeg <= endAngle) {
@@ -399,12 +425,6 @@ const LidarVisualizer = () => {
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
 
-        const gridHelper = new THREE.GridHelper(10, 10);
-        scene.add(gridHelper);
-
-        const axesHelper = new THREE.AxesHelper(5);
-        scene.add(axesHelper);
-
         // ピアノ鍵盤の作成
         const { innerRadius, outerRadius, startAngle, endAngle } = PIANO_CONFIG;
         const angleRange = endAngle - startAngle;
@@ -480,14 +500,27 @@ const LidarVisualizer = () => {
             // 鍵盤に音名テキストを追加
             const canvas = document.createElement('canvas');
             const context = canvas.getContext('2d');
-            canvas.width = 256;
-            canvas.height = 128;
+            canvas.width = 512;
+            canvas.height = 256;
 
-            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.9)' : 'rgba(0, 0, 0, 0.8)';
-            context.font = 'bold 48px Arial';
             context.textAlign = 'center';
             context.textBaseline = 'middle';
-            context.fillText(note.note, 128, 64);
+            context.font = 'bold 120px Arial';
+
+            // 影を追加
+            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            context.shadowBlur = 10;
+            context.shadowOffsetX = 4;
+            context.shadowOffsetY = 4;
+
+            // 縁（ストローク）を追加
+            context.strokeStyle = note.isBlack ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.9)';
+            context.lineWidth = 20;
+            context.strokeText(note.note, 256, 128);
+
+            // テキスト本体
+            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.9)';
+            context.fillText(note.note, 256, 128);
 
             const texture = new THREE.CanvasTexture(canvas);
             const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
@@ -586,6 +619,44 @@ const LidarVisualizer = () => {
                     position: 'relative'
                 }}
             />
+
+            {/* 中央上部: タイトル */}
+            <div
+                style={{
+                    position: 'absolute',
+                    top: '20px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    textAlign: 'center',
+                    pointerEvents: 'none'
+                }}
+            >
+                <div style={{
+                    fontSize: '72px',
+                    fontWeight: 'bold',
+                    fontFamily: 'serif',
+                    background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 50%, #FF6347 100%)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                    backgroundClip: 'text',
+                    textShadow: '0 0 20px rgba(255, 215, 0, 0.5)',
+                    filter: 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.8)) drop-shadow(0 0 15px rgba(255, 215, 0, 0.4))',
+                    letterSpacing: '8px',
+                    padding: '10px 20px'
+                }}>
+                    ピアノ
+                </div>
+                <div style={{
+                    fontSize: '18px',
+                    color: 'rgba(255, 255, 255, 0.9)',
+                    fontWeight: 'bold',
+                    textShadow: '0 2px 4px rgba(0, 0, 0, 0.8)',
+                    marginTop: '-10px',
+                    letterSpacing: '4px'
+                }}>
+                    LiDAR FOOT PIANO
+                </div>
+            </div>
 
             {/* 左上: LiDAR情報 */}
             <div
@@ -822,6 +893,76 @@ const LidarVisualizer = () => {
                                  '矩形波'}
                             </button>
                         ))}
+                    </div>
+                </div>
+
+                {/* 回転・反転コントロール */}
+                <div style={{
+                    marginTop: '12px',
+                    paddingTop: '12px',
+                    borderTop: '1px solid rgba(255,255,255,0.3)'
+                }}>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
+                        🔄 回転・反転
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setFlipHorizontal(!flipHorizontal);
+                            }}
+                            style={{
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                background: flipHorizontal ? '#cc6600' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                opacity: flipHorizontal ? 1 : 0.7
+                            }}
+                        >
+                            ↔️ 左右反転 {flipHorizontal ? 'ON' : 'OFF'}
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setFlipVertical(!flipVertical);
+                            }}
+                            style={{
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                background: flipVertical ? '#cc6600' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                opacity: flipVertical ? 1 : 0.7
+                            }}
+                        >
+                            ↕️ 上下反転 {flipVertical ? 'ON' : 'OFF'}
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setRotate180(!rotate180);
+                            }}
+                            style={{
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                background: rotate180 ? '#cc6600' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                opacity: rotate180 ? 1 : 0.7
+                            }}
+                        >
+                            🔃 180°回転 {rotate180 ? 'ON' : 'OFF'}
+                        </button>
                     </div>
                 </div>
             </div>
