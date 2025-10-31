@@ -14,8 +14,8 @@ function nowMs() {
 const PIANO_CONFIG = {
     innerRadius: 0.5,      // 内径 (m)
     outerRadius: 0.8,      // 外径 (m)
-    startAngle: 70,       // 開始角度 (度)
-    endAngle: 290,          // 終了角度 (度)
+    startAngle: 50,        // 開始角度 (度) min:-90
+    endAngle: 270,         // 終了角度 (度) max:270
 };
 
 // ピアノ音階定義 (純正律 - 整数比)
@@ -33,18 +33,18 @@ const PIANO_RANGE = {
 
 // 基本音階定義（C4基準、1オクターブ分）
 const BASE_NOTES = [
-    { note: 'C', ratio: 1,        name: 'ド',   isBlack: false },  // 1/1
-    { note: 'C#', ratio: 16 / 15,  name: 'ド#', isBlack: true },   // 16/15
-    { note: 'D', ratio: 9 / 8,    name: 'レ',   isBlack: false },  // 9/8
-    { note: 'D#', ratio: 6 / 5,    name: 'レ#', isBlack: true },   // 6/5
-    { note: 'E', ratio: 5 / 4,    name: 'ミ',   isBlack: false },  // 5/4
-    { note: 'F', ratio: 4 / 3,    name: 'フ',   isBlack: false },  // 4/3
-    { note: 'F#', ratio: 45 / 32,  name: 'フ#', isBlack: true },   // 45/32
-    { note: 'G', ratio: 3 / 2,    name: 'ソ',   isBlack: false },  // 3/2
-    { note: 'G#', ratio: 8 / 5,    name: 'ソ#', isBlack: true },   // 8/5
-    { note: 'A', ratio: 5 / 3,    name: 'ラ',   isBlack: false },  // 5/3
-    { note: 'A#', ratio: 16 / 9,   name: 'ラ#', isBlack: true },   // 16/9
-    { note: 'B', ratio: 15 / 8,   name: 'シ',   isBlack: false },  // 15/8
+    { note: 'C', ratio: 1, name: 'ド', isBlack: false },  // 1/1
+    { note: 'C#', ratio: 16 / 15, name: 'ド#', isBlack: true },   // 16/15
+    { note: 'D', ratio: 9 / 8, name: 'レ', isBlack: false },  // 9/8
+    { note: 'D#', ratio: 6 / 5, name: 'レ#', isBlack: true },   // 6/5
+    { note: 'E', ratio: 5 / 4, name: 'ミ', isBlack: false },  // 5/4
+    { note: 'F', ratio: 4 / 3, name: 'フ', isBlack: false },  // 4/3
+    { note: 'F#', ratio: 45 / 32, name: 'フ#', isBlack: true },   // 45/32
+    { note: 'G', ratio: 3 / 2, name: 'ソ', isBlack: false },  // 3/2
+    { note: 'G#', ratio: 8 / 5, name: 'ソ#', isBlack: true },   // 8/5
+    { note: 'A', ratio: 5 / 3, name: 'ラ', isBlack: false },  // 5/3
+    { note: 'A#', ratio: 16 / 9, name: 'ラ#', isBlack: true },   // 16/9
+    { note: 'B', ratio: 15 / 8, name: 'シ', isBlack: false },  // 15/8
 ];
 
 // 音階範囲を生成する関数
@@ -204,7 +204,6 @@ const LidarVisualizer = () => {
     const pianoLabelsRef = useRef([]); // ピアノ鍵盤の音名ラベル配列
     const centerTextRef = useRef(null); // 円の中心の演奏中テキスト
     const activeNotesRef = useRef(new Set()); // 現在鳴っている音
-    const octaveShiftRef = useRef(0); // オクターブシフトの現在値（ref版）
     const rangeShiftRef = useRef(PIANO_RANGE.rangeShift); // 音域シフトの現在値（ref版）
     const pianoNotesRef = useRef(PIANO_NOTES); // 現在の音階配列（ref版）
     // 可変パラメータ用のrefs
@@ -214,59 +213,8 @@ const LidarVisualizer = () => {
     const innerRingRef = useRef(null);
     const outerRingRef = useRef(null);
 
-    // 音名をオクターブシフトに応じて変換する関数
-    const shiftNoteName = (noteName, shift) => {
-        // 例: "C4" -> ["C", "4"]
-        const match = noteName.match(/^([A-G]#?)(\d+)$/);
-        if (!match) return noteName;
-
-        const note = match[1]; // "C", "D#" など
-        const octave = parseInt(match[2]); // 4, 5 など
-        const newOctave = octave + shift;
-
-        return `${note}${newOctave}`;
-    };
-
-    // 3D上のラベルテキストを更新する関数
-    const updatePianoLabels = (shift) => {
-        pianoLabelsRef.current.forEach((sprite, index) => {
-            const note = PIANO_NOTES[index];
-            const shiftedName = shiftNoteName(note.note, shift);
-
-            // 新しいテクスチャを作成
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            canvas.width = 512;
-            canvas.height = 256;
-
-            context.textAlign = 'center';
-            context.textBaseline = 'middle';
-            context.font = 'bold 120px Arial';
-
-            // 影を追加
-            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
-            context.shadowBlur = 10;
-            context.shadowOffsetX = 4;
-            context.shadowOffsetY = 4;
-
-            // 縁（ストローク）を追加
-            context.strokeStyle = note.isBlack ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.9)';
-            context.lineWidth = 20;
-            context.strokeText(shiftedName, 256, 128);
-
-            // テキスト本体
-            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.9)';
-            context.fillText(shiftedName, 256, 128);
-
-            // テクスチャを更新
-            const texture = new THREE.CanvasTexture(canvas);
-            sprite.material.map = texture;
-            sprite.material.needsUpdate = true;
-        });
-    };
-
     // 円の中心のテキストを更新する関数
-    const updateCenterText = (notes, shift) => {
+    const updateCenterText = (notes) => {
         if (!centerTextRef.current) return;
 
         const canvas = document.createElement('canvas');
@@ -283,16 +231,16 @@ const LidarVisualizer = () => {
             context.textAlign = 'center';
             context.textBaseline = 'middle';
 
-            const shiftedNames = notes.map(n => shiftNoteName(n.note, shift)).join(', ');
+            const noteNames = notes.map(n => n.note).join(', ');
             context.font = 'bold 50px Arial';
             context.shadowBlur = 10;
             context.shadowOffsetX = 3;
             context.shadowOffsetY = 3;
             context.strokeStyle = 'rgba(0, 0, 0, 0.8)';
             context.lineWidth = 5;
-            context.strokeText(shiftedNames, 512, 350);
+            context.strokeText(noteNames, 512, 350);
             context.fillStyle = 'rgba(255, 255, 255, 0.9)';
-            context.fillText(shiftedNames, 512, 350);
+            context.fillText(noteNames, 512, 350);
         }
 
         // テクスチャを更新
@@ -310,7 +258,6 @@ const LidarVisualizer = () => {
     const [lastRTT, setLastRTT] = useState(0);
     const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
     const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
-    const [octaveShift, setOctaveShift] = useState(0); // オクターブシフト (-2 ~ +2)
     const [rangeShift, setRangeShift] = useState(PIANO_RANGE.rangeShift); // 音域シフト (-2 ~ +2)
     const [waveType, setWaveType] = useState('sawtooth'); // 波形タイプ（デフォルト: ノコギリ波）
     const [decayEnabled, setDecayEnabled] = useState(true); // 音の減衰ON/OFF（デフォルト: ON）
@@ -561,8 +508,8 @@ const LidarVisualizer = () => {
 
     // 演奏中の音が変わったら中央テキストを更新
     useEffect(() => {
-        updateCenterText(currentNotes, octaveShift);
-    }, [currentNotes, octaveShift]);
+        updateCenterText(currentNotes);
+    }, [currentNotes]);
 
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
@@ -754,12 +701,11 @@ const LidarVisualizer = () => {
 
                 // 音の再生・停止
                 if (synthRef.current) {
-                    // 新しく検出された音を再生（オクターブシフト適用）
+                    // 新しく検出された音を再生
                     detectedNotes.forEach(note => {
                         if (!activeNotesRef.current.has(note.note)) {
-                            const shiftedFreq = note.freq * Math.pow(2, octaveShiftRef.current);
-                            console.log(`Playing: ${note.note}, base: ${note.freq}Hz, shifted: ${shiftedFreq.toFixed(2)}Hz, octave: ${octaveShiftRef.current}`);
-                            synthRef.current.playNote(shiftedFreq, note.note);
+                            console.log(`Playing: ${note.note}, freq: ${note.freq.toFixed(2)}Hz`);
+                            synthRef.current.playNote(note.freq, note.note);
                             activeNotesRef.current.add(note.note);
                         }
                     });
@@ -1211,89 +1157,6 @@ const LidarVisualizer = () => {
                 </div>
                 <div>演奏中: {currentNotes.length} 音</div>
 
-                {/* オクターブ調整 */}
-                <div style={{
-                    marginTop: '12px',
-                    paddingTop: '12px',
-                    borderTop: '1px solid rgba(255,255,255,0.3)'
-                }}>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
-                        🎵 オクターブシフト
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const newShift = Math.max(octaveShift - 1, -2);
-                                setOctaveShift(newShift);
-                                octaveShiftRef.current = newShift;
-                                // 3D上のラベルを更新
-                                updatePianoLabels(newShift);
-                                // 既に鳴っている音を全て停止
-                                if (synthRef.current) {
-                                    synthRef.current.stopAll();
-                                    activeNotesRef.current.clear();
-                                }
-                            }}
-                            disabled={octaveShift <= -2}
-                            style={{
-                                padding: '8px 16px',
-                                fontSize: '18px',
-                                fontWeight: 'bold',
-                                background: octaveShift <= -2 ? '#444' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '5px',
-                                cursor: octaveShift <= -2 ? 'not-allowed' : 'pointer',
-                                opacity: octaveShift <= -2 ? 0.5 : 1
-                            }}
-                        >
-                            −
-                        </button>
-                        <div style={{
-                            fontSize: '18px',
-                            fontWeight: 'bold',
-                            minWidth: '60px',
-                            textAlign: 'center',
-                            color: octaveShift === 0 ? '#0f0' : '#ff0'
-                        }}>
-                            {octaveShift > 0 ? '+' : ''}{octaveShift}
-                        </div>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const newShift = Math.min(octaveShift + 1, 2);
-                                setOctaveShift(newShift);
-                                octaveShiftRef.current = newShift;
-                                // 3D上のラベルを更新
-                                updatePianoLabels(newShift);
-                                // 既に鳴っている音を全て停止
-                                if (synthRef.current) {
-                                    synthRef.current.stopAll();
-                                    activeNotesRef.current.clear();
-                                }
-                            }}
-                            disabled={octaveShift >= 2}
-                            style={{
-                                padding: '8px 16px',
-                                fontSize: '18px',
-                                fontWeight: 'bold',
-                                background: octaveShift >= 2 ? '#444' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '5px',
-                                cursor: octaveShift >= 2 ? 'not-allowed' : 'pointer',
-                                opacity: octaveShift >= 2 ? 0.5 : 1
-                            }}
-                        >
-                            +
-                        </button>
-                    </div>
-                    <div style={{ fontSize: '10px', marginTop: '5px', opacity: 0.7 }}>
-                        範囲: -2 〜 +2
-                    </div>
-                </div>
-
                 {/* 音域シフト */}
                 <div style={{
                     marginTop: '12px',
@@ -1407,9 +1270,9 @@ const LidarVisualizer = () => {
                                 }}
                             >
                                 {type === 'sine' ? 'サイン波' :
-                                 type === 'triangle' ? '三角波' :
-                                 type === 'sawtooth' ? 'ノコギリ波' :
-                                 '矩形波'}
+                                    type === 'triangle' ? '三角波' :
+                                        type === 'sawtooth' ? 'ノコギリ波' :
+                                            '矩形波'}
                             </button>
                         ))}
                     </div>
