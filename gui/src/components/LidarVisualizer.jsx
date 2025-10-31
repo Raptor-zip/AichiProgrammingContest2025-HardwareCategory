@@ -131,6 +131,16 @@ const LidarVisualizer = () => {
     const [flipVertical, setFlipVertical] = useState(false); // 上下反転
     const [rotate180, setRotate180] = useState(false); // 180度回転
 
+    // 反転/回転フラグのref版（WebSocketハンドラのクロージャ問題を回避）
+    const flipHorizontalRef = useRef(flipHorizontal);
+    const flipVerticalRef = useRef(flipVertical);
+    const rotate180Ref = useRef(rotate180);
+
+    // state -> ref 同期
+    useEffect(() => { flipHorizontalRef.current = flipHorizontal; }, [flipHorizontal]);
+    useEffect(() => { flipVerticalRef.current = flipVertical; }, [flipVertical]);
+    useEffect(() => { rotate180Ref.current = rotate180; }, [rotate180]);
+
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
         if (synthRef.current && synthRef.current.audioContext) {
@@ -206,23 +216,23 @@ const LidarVisualizer = () => {
 
                 const distances = new Float32Array(buffer.buffer, 8, pointCount);
 
-                // 変換を適用（回転・反転）
+                // 変換を適用（回転・反転） - ref経由で最新値を読む
                 const transformedDistances = new Float32Array(360);
                 for (let i = 0; i < 360; i++) {
                     let transformedIndex = i;
 
                     // 180度回転
-                    if (rotate180) {
+                    if (rotate180Ref.current) {
                         transformedIndex = (transformedIndex + 180) % 360;
                     }
 
                     // 左右反転（Y軸周りの反転 = X座標反転）
-                    if (flipHorizontal) {
+                    if (flipHorizontalRef.current) {
                         transformedIndex = (360 - transformedIndex) % 360;
                     }
 
                     // 上下反転（X軸周りの反転 = Z座標反転）
-                    if (flipVertical) {
+                    if (flipVerticalRef.current) {
                         transformedIndex = (180 - transformedIndex + 360) % 360;
                     }
 
@@ -909,7 +919,9 @@ const LidarVisualizer = () => {
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setFlipHorizontal(!flipHorizontal);
+                                const v = !flipHorizontal;
+                                setFlipHorizontal(v);
+                                flipHorizontalRef.current = v;
                             }}
                             style={{
                                 padding: '6px 10px',
@@ -928,7 +940,9 @@ const LidarVisualizer = () => {
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setFlipVertical(!flipVertical);
+                                const v = !flipVertical;
+                                setFlipVertical(v);
+                                flipVerticalRef.current = v;
                             }}
                             style={{
                                 padding: '6px 10px',
@@ -947,7 +961,9 @@ const LidarVisualizer = () => {
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
-                                setRotate180(!rotate180);
+                                const v = !rotate180;
+                                setRotate180(v);
+                                rotate180Ref.current = v;
                             }}
                             style={{
                                 padding: '6px 10px',
