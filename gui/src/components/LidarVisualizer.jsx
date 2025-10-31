@@ -146,6 +146,7 @@ const LidarVisualizer = () => {
     const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
     const pianoEdgesRef = useRef([]); // ピアノ鍵盤の境界線配列
     const pianoLabelsRef = useRef([]); // ピアノ鍵盤の音名ラベル配列
+    const centerTextRef = useRef(null); // 円の中心の演奏中テキスト
     const activeNotesRef = useRef(new Set()); // 現在鳴っている音
     const octaveShiftRef = useRef(0); // オクターブシフトの現在値（ref版）
 
@@ -200,6 +201,56 @@ const LidarVisualizer = () => {
         });
     };
 
+    // 円の中心のテキストを更新する関数
+    const updateCenterText = (notes, shift) => {
+        if (!centerTextRef.current) return;
+
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.width = 1024;
+        canvas.height = 512;
+
+        // 透明背景
+        context.fillStyle = 'rgba(0, 0, 0, 0)';
+        context.fillRect(0, 0, 1024, 512);
+
+        if (notes.length > 0) {
+            // 演奏中の音を表示
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+
+            // 大きな音名表示（例: C + E + G）
+            const labels = notes.map(n => n.label).join(' + ');
+            context.font = 'bold 150px Arial';
+            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            context.shadowBlur = 20;
+            context.shadowOffsetX = 5;
+            context.shadowOffsetY = 5;
+            context.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+            context.lineWidth = 10;
+            context.strokeText(labels, 512, 200);
+            context.fillStyle = '#ffff00';
+            context.fillText(labels, 512, 200);
+
+            // 詳細表示（例: C5, E5, G5）
+            const shiftedNames = notes.map(n => shiftNoteName(n.note, shift)).join(', ');
+            context.font = 'bold 50px Arial';
+            context.shadowBlur = 10;
+            context.shadowOffsetX = 3;
+            context.shadowOffsetY = 3;
+            context.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+            context.lineWidth = 5;
+            context.strokeText(shiftedNames, 512, 350);
+            context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            context.fillText(shiftedNames, 512, 350);
+        }
+
+        // テクスチャを更新
+        const texture = new THREE.CanvasTexture(canvas);
+        centerTextRef.current.material.map = texture;
+        centerTextRef.current.material.needsUpdate = true;
+    };
+
     const [wsStatus, setWsStatus] = useState('disconnected');
     const [frameCount, setFrameCount] = useState(0);
     const [fps, setFps] = useState(0);
@@ -232,6 +283,11 @@ const LidarVisualizer = () => {
             synthRef.current.setDecayEnabled(decayEnabled);
         }
     }, [decayEnabled]);
+
+    // 演奏中の音が変わったら中央テキストを更新
+    useEffect(() => {
+        updateCenterText(currentNotes, octaveShift);
+    }, [currentNotes, octaveShift]);
 
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
@@ -457,6 +513,12 @@ const LidarVisualizer = () => {
                         if (pianoEdgesRef.current[index]) {
                             pianoEdgesRef.current[index].position.y = pressedEdgeY;
                         }
+                        // ラベルも鍵盤に追従して下に移動
+                        if (pianoLabelsRef.current[index]) {
+                            const defaultLabelY = note.isBlack ? 0.05 : 0.04;
+                            const labelOffset = defaultLabelY - defaultY; // ラベルと鍵盤の相対オフセット
+                            pianoLabelsRef.current[index].position.y = pressedY + labelOffset;
+                        }
                     } else {
                         // デフォルトの状態に戻す
                         if (note.isBlack) {
@@ -471,6 +533,11 @@ const LidarVisualizer = () => {
                         // 境界線も元の位置に戻す
                         if (pianoEdgesRef.current[index]) {
                             pianoEdgesRef.current[index].position.y = defaultEdgeY;
+                        }
+                        // ラベルも元の位置に戻す
+                        if (pianoLabelsRef.current[index]) {
+                            const defaultLabelY = note.isBlack ? 0.05 : 0.04;
+                            pianoLabelsRef.current[index].position.y = defaultLabelY;
                         }
                     }
                 });
@@ -692,6 +759,29 @@ const LidarVisualizer = () => {
         directionalLight.position.set(5, 10, 5);
         scene.add(directionalLight);
 
+        // 円の中心に演奏中の音を表示するテキストスプライト
+        const centerCanvas = document.createElement('canvas');
+        const centerContext = centerCanvas.getContext('2d');
+        centerCanvas.width = 1024;
+        centerCanvas.height = 512;
+
+        // 初期テキスト（何も演奏していない状態）
+        centerContext.fillStyle = 'rgba(0, 0, 0, 0)'; // 透明背景
+        centerContext.fillRect(0, 0, 1024, 512);
+
+        const centerTexture = new THREE.CanvasTexture(centerCanvas);
+        const centerSpriteMaterial = new THREE.SpriteMaterial({
+            map: centerTexture,
+            transparent: true,
+            depthTest: false, // 常に前面に表示
+            depthWrite: false
+        });
+        const centerSprite = new THREE.Sprite(centerSpriteMaterial);
+        centerSprite.position.set(0, 0.3, 0); // 円の中心、少し上
+        centerSprite.scale.set(1.5, 0.75, 1); // サイズ調整
+        scene.add(centerSprite);
+        centerTextRef.current = centerSprite;
+
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(360 * 3);
         const colors = new Float32Array(360 * 3);
@@ -783,7 +873,7 @@ const LidarVisualizer = () => {
                 }}
             >
                 <div style={{
-                    fontSize: '72px',
+                    fontSize: '100px',
                     fontWeight: 'bold',
                     fontFamily: 'serif',
                     background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 50%, #FF6347 100%)',
@@ -854,46 +944,6 @@ const LidarVisualizer = () => {
                     fontWeight: 'bold'
                 }}>
                     🔊 Audio: {audioEnabled ? 'Enabled' : 'Click to enable'}
-                </div>
-            </div>
-
-            {/* 中央上部: 演奏中の音符 */}
-            <div
-                style={{
-                    position: 'absolute',
-                    top: 20,
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    color: 'white',
-                    background: 'rgba(0, 0, 0, 0.8)',
-                    padding: '20px 40px',
-                    borderRadius: '15px',
-                    fontFamily: 'sans-serif',
-                    fontSize: '48px',
-                    fontWeight: 'bold',
-                    minWidth: '300px',
-                    textAlign: 'center',
-                    boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)'
-                }}
-            >
-                <div style={{ fontSize: '24px', marginBottom: '10px', opacity: 0.7 }}>
-                    🎹 演奏中の音
-                </div>
-                <div style={{
-                    fontSize: '64px',
-                    color: currentNotes.length > 0 ? '#ffff00' : '#666',
-                    textShadow: currentNotes.length > 0 ? '0 0 20px rgba(255, 255, 0, 0.8)' : 'none'
-                }}>
-                    {currentNotes.length > 0
-                        ? currentNotes.map(n => n.label).join(' + ')
-                        : '---'
-                    }
-                </div>
-                <div style={{ fontSize: '18px', marginTop: '10px', opacity: 0.6 }}>
-                    {currentNotes.length > 0
-                        ? currentNotes.map(n => shiftNoteName(n.note, octaveShift)).join(', ')
-                        : '足を鍵盤に乗せてください'
-                    }
                 </div>
             </div>
 
