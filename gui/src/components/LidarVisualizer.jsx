@@ -201,6 +201,7 @@ const LidarVisualizer = () => {
                 if (pointsRef.current) {
                     const positions = pointsRef.current.geometry.attributes.position.array;
                     const colors = pointsRef.current.geometry.attributes.color.array;
+                    const { innerRadius, outerRadius, startAngle, endAngle } = PIANO_CONFIG;
 
                     for (let i = 0; i < 360; i++) {
                         const angle = (i * Math.PI) / 180.0;
@@ -210,10 +211,24 @@ const LidarVisualizer = () => {
                         positions[i * 3 + 1] = 0.0;
                         positions[i * 3 + 2] = Math.sin(angle) * distance;
 
-                        const normalizedDistance = Math.min(distance / 3.0, 1.0);
-                        colors[i * 3] = normalizedDistance;
-                        colors[i * 3 + 1] = 1 - normalizedDistance;
-                        colors[i * 3 + 2] = 0.5;
+                        // ドーナツ領域判定
+                        const angleDeg = i - 90;
+                        const isInDonutAngle = angleDeg >= startAngle && angleDeg <= endAngle;
+                        const isInDonutRadius = distance >= innerRadius && distance <= outerRadius;
+                        const isInDonut = isInDonutAngle && isInDonutRadius;
+
+                        if (isInDonut) {
+                            // ドーナツ領域内: 明るく目立つ色（黄色系）
+                            colors[i * 3] = 1.0;     // R
+                            colors[i * 3 + 1] = 1.0; // G
+                            colors[i * 3 + 2] = 0.0; // B
+                        } else {
+                            // ドーナツ領域外: 暗く半透明（青灰色）
+                            const normalizedDistance = Math.min(distance / 3.0, 1.0);
+                            colors[i * 3] = normalizedDistance * 0.3;
+                            colors[i * 3 + 1] = normalizedDistance * 0.3;
+                            colors[i * 3 + 2] = normalizedDistance * 0.5;
+                        }
                     }
 
                     pointsRef.current.geometry.attributes.position.needsUpdate = true;
@@ -491,6 +506,7 @@ const LidarVisualizer = () => {
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(360 * 3);
         const colors = new Float32Array(360 * 3);
+        const alphas = new Float32Array(360); // 透明度用の配列
 
         for (let i = 0; i < 360; i++) {
             positions[i * 3] = 0.0;
@@ -500,15 +516,20 @@ const LidarVisualizer = () => {
             colors[i * 3] = 1.0;
             colors[i * 3 + 1] = 0.0;
             colors[i * 3 + 2] = 0.5;
+
+            alphas[i] = 1.0; // 初期値は完全不透明
         }
 
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
 
         const material = new THREE.PointsMaterial({
             size: 0.05,
             vertexColors: true,
-            sizeAttenuation: true
+            sizeAttenuation: true,
+            transparent: true,
+            opacity: 1.0
         });
 
         const points = new THREE.Points(geometry, material);
