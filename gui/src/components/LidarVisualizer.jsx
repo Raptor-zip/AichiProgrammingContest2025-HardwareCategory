@@ -12,8 +12,8 @@ function nowMs() {
 
 // ピアノ設定
 const PIANO_CONFIG = {
-    innerRadius: 0.3,      // 内径 (m)
-    outerRadius: 2.0,      // 外径 (m)
+    innerRadius: 0.5,      // 内径 (m)
+    outerRadius: 1.0,      // 外径 (m)
     startAngle: -90,       // 開始角度 (度)
     endAngle: 90,          // 終了角度 (度)
     detectionThreshold: 0.2, // 検出閾値 (m) - この距離以下なら足を検出
@@ -115,9 +115,26 @@ const LidarVisualizer = () => {
     const [pingStats, setPingStats] = useState({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
     const [lastRTT, setLastRTT] = useState(0);
     const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
+    const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
+
+    // 画面クリックでオーディオコンテキストを開始
+    const enableAudio = () => {
+        if (synthRef.current && synthRef.current.audioContext) {
+            synthRef.current.audioContext.resume().then(() => {
+                console.log('AudioContext resumed');
+                setAudioEnabled(true);
+            });
+        }
+    };
 
     // WebSocket接続とバイナリデータ受信
     useEffect(() => {
+        // PianoSynthを初期化
+        if (!synthRef.current) {
+            synthRef.current = new PianoSynth();
+            console.log('PianoSynth initialized');
+        }
+
         const h = window.location.hostname || '192.168.4.1';
         const url = `ws://${h}:81/`;
 
@@ -317,6 +334,10 @@ const LidarVisualizer = () => {
             if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                 ws.close();
             }
+            // すべての音を停止
+            if (synthRef.current) {
+                synthRef.current.stopAll();
+            }
         };
     }, []);
 
@@ -492,7 +513,7 @@ const LidarVisualizer = () => {
     }, []);
 
     return (
-        <div style={{ width: '100%', height: '100vh' }}>
+        <div style={{ width: '100%', height: '100vh' }} onClick={enableAudio}>
             <div
                 ref={containerRef}
                 style={{
@@ -538,6 +559,15 @@ const LidarVisualizer = () => {
 
                 <div style={{ marginTop: '10px', fontSize: '12px', opacity: 0.8 }}>
                     Controls: Mouse to rotate, scroll to zoom
+                </div>
+
+                <div style={{
+                    marginTop: '10px',
+                    fontSize: '12px',
+                    color: audioEnabled ? '#0f0' : '#ff0',
+                    fontWeight: 'bold'
+                }}>
+                    🔊 Audio: {audioEnabled ? 'Enabled' : 'Click to enable'}
                 </div>
             </div>
 
