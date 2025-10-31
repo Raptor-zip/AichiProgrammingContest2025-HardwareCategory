@@ -140,6 +140,7 @@ const LidarVisualizer = () => {
     const animationIdRef = useRef(null);
     const wsRef = useRef(null);
     const pingTimerRef = useRef(null);
+    const pingTimeoutRef = useRef(null); // Pingタイムアウト監視用
     const pingSeqRef = useRef(0);
     const synthRef = useRef(null);
     const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
@@ -219,6 +220,15 @@ const LidarVisualizer = () => {
                     pingSeqRef.current++;
                     const payload = { type: 'ping', id: pingSeqRef.current, t: nowMs() };
                     wsRef.current.send(JSON.stringify(payload));
+
+                    // 3秒以内にPong応答がない場合、ページをリロード
+                    if (pingTimeoutRef.current) {
+                        clearTimeout(pingTimeoutRef.current);
+                    }
+                    pingTimeoutRef.current = setTimeout(() => {
+                        console.warn('Ping timeout (3000ms) - Reloading page...');
+                        window.location.reload();
+                    }, 3000);
                 }
             }, 1000); // 1秒間隔でPing送信
 
@@ -418,6 +428,12 @@ const LidarVisualizer = () => {
                 try {
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'ping') {
+                        // Pong応答を受信したので、タイムアウトタイマーをクリア
+                        if (pingTimeoutRef.current) {
+                            clearTimeout(pingTimeoutRef.current);
+                            pingTimeoutRef.current = null;
+                        }
+
                         const now = nowMs();
                         const rtt = now - msg.t;
                         setLastRTT(rtt);
@@ -443,6 +459,9 @@ const LidarVisualizer = () => {
             console.log('Cleaning up WebSocket');
             if (pingTimerRef.current) {
                 clearInterval(pingTimerRef.current);
+            }
+            if (pingTimeoutRef.current) {
+                clearTimeout(pingTimeoutRef.current);
             }
             if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                 ws.close();
