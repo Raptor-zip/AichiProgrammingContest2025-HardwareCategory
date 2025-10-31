@@ -13,6 +13,15 @@
 const char *wifi_ssid = "raptor";
 const char *wifi_pass = "12345678";
 
+// 再接続設定
+#define WIFI_RECONNECT_INTERVAL 5000  // WiFi再接続試行間隔 (5秒)
+#define WIFI_MAX_RETRIES 10           // WiFi最大再接続試行回数
+#define WIFI_RESET_AFTER_RETRIES 20   // この回数失敗したらリセット
+#define WIFI_CHECK_INTERVAL 10000     // WiFi接続確認間隔 (10秒)
+
+unsigned long lastWifiCheck = 0;
+unsigned int wifiRetryCount = 0;
+
 WebServer httpServer(80);
 WebSocketsServer wsServer(81);
 
@@ -29,6 +38,8 @@ LD06 ld06;
 
 void LD06_onReceived(LD06 *lidar);
 void sendLidarData();
+void reconnectWiFi();
+void checkWiFiConnection();
 
 // HTML ページ
 const char index_html[] PROGMEM = R"rawliteral(
@@ -86,35 +97,10 @@ void setup() {
   delay(100);
 
   Serial.println();
-  // STA のみで動かす -> 既存Wi-Fiに接続を試みる
-  Serial.printf("Connecting to WiFi '%s'\n", wifi_ssid);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifi_ssid, wifi_pass);
-  unsigned long start = millis();
-  Serial.print("Connecting");
-  // 最大30秒待つ
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
-    Serial.print('.');
-    delay(500);
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
+  Serial.println("ESP32 LiDAR System starting...");
 
-    if (!MDNS.begin("esp32")) {
-      Serial.println("Error starting mDNS");
-      return;
-    }
-
-    IPAddress myIP = WiFi.localIP();
-    Serial.print("Connected. IP address: ");
-    Serial.println(myIP);
-  } else {
-    // STA のみ => 失敗したら先に進まず停止して原因を直す
-    Serial.println("Failed to connect to WiFi (STA-only). Halting.");
-    while (true) {
-      delay(1000);
-    }
-  }
+  // WiFi接続（初回は待機）
+  reconnectWiFi();
 
   // HTTP
   httpServer.on("/", handleRoot);
@@ -131,6 +117,9 @@ void loop() {
   static uint32_t lastServerControlTime = 0;
 
   uint32_t currentTime = millis();
+
+  // WiFi接続チェック（定期的に確認）
+  checkWiFiConnection();
 
   // LD06受信
   if (Serial2.available() > 0) {
@@ -194,4 +183,95 @@ void sendLidarData() {
 
   lidarFrameCount++;
   Serial.printf("[LiDAR] Sent frame %u\n", lidarFrameCount);
+}
+
+// WiFi再接続処理
+void reconnectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("[WiFi] Already connected");
+    wifiRetryCount = 0;
+    return;
+  }
+
+  Serial.printf("[WiFi] Connecting to '%s'... (attempt %d)\n", wifi_ssid, wifiRetryCount + 1);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifi_ssid, wifi_pass);
+
+  unsigned long start = millis();
+  int dots = 0;
+
+  // 最大30秒待つ
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
+    delay(500);
+    Serial.print('.');
+    dots++;
+    if (dots % 60 == 0) Serial.println();
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    // 接続成功
+    wifiRetryCount = 0;
+
+    if (!MDNS.begin("esp32")) {
+      Serial.println("[mDNS] Error starting mDNS");
+    } else {
+      Serial.println("[mDNS] Started successfully");
+    }
+
+    IPAddress myIP = WiFi.localIP();
+    Serial.print("[WiFi] Connected! IP address: ");
+    Serial.println(myIP);
+
+  } else {
+    // 接続失敗
+    wifiRetryCount++;
+    Serial.printf("[WiFi] Connection failed (retry count: %d)\n", wifiRetryCount);
+
+    // 最大リトライ回数に達したらリセット
+    if (wifiRetryCount >= WIFI_RESET_AFTER_RETRIES) {
+      Serial.println("[WiFi] Max retries reached. Rebooting ESP32...");
+      delay(1000);
+      ESP.restart();
+    }
+  }
+}
+
+// WiFi接続状態を定期的にチェック
+void checkWiFiConnection() {
+  unsigned long currentTime = millis();
+
+  // 定期チェック間隔
+  if (currentTime - lastWifiCheck < WIFI_CHECK_INTERVAL) {
+    return;
+  }
+  lastWifiCheck = currentTime;
+
+  // WiFi切断検出
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WiFi] Connection lost! Attempting to reconnect...");
+
+    // WebSocketクライアントを切断
+    for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
+      if (wsServer.clientIsConnected(i)) {
+        wsServer.disconnect(i);
+      }
+    }
+
+    // 再接続試行
+    reconnectWiFi();
+
+    // 再接続に失敗し、リトライ回数が上限に近い場合
+    if (WiFi.status() != WL_CONNECTED && wifiRetryCount >= WIFI_MAX_RETRIES) {
+      Serial.printf("[WiFi] Still disconnected after %d retries. Waiting %d ms before next attempt...\n",
+                    wifiRetryCount, WIFI_RECONNECT_INTERVAL);
+      delay(WIFI_RECONNECT_INTERVAL);
+    }
+  } else {
+    // 接続中は定期的にログ出力
+    if (wifiRetryCount > 0) {
+      Serial.println("[WiFi] Connection stable. Resetting retry count.");
+      wifiRetryCount = 0;
+    }
+  }
 }
