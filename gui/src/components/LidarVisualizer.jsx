@@ -219,20 +219,6 @@ const LidarVisualizer = () => {
             context.textAlign = 'center';
             context.textBaseline = 'middle';
 
-            // 大きな音名表示（例: C + E + G）
-            const labels = notes.map(n => n.label).join(' + ');
-            context.font = 'bold 150px Arial';
-            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
-            context.shadowBlur = 20;
-            context.shadowOffsetX = 5;
-            context.shadowOffsetY = 5;
-            context.strokeStyle = 'rgba(0, 0, 0, 0.9)';
-            context.lineWidth = 10;
-            context.strokeText(labels, 512, 200);
-            context.fillStyle = '#ffff00';
-            context.fillText(labels, 512, 200);
-
-            // 詳細表示（例: C5, E5, G5）
             const shiftedNames = notes.map(n => shiftNoteName(n.note, shift)).join(', ');
             context.font = 'bold 50px Arial';
             context.shadowBlur = 10;
@@ -888,7 +874,7 @@ const LidarVisualizer = () => {
                     ピアノ
                 </div>
                 <div style={{
-                    fontSize: '18px',
+                    fontSize: '30px',
                     color: 'rgba(255, 255, 255, 0.9)',
                     fontWeight: 'bold',
                     textShadow: '0 2px 4px rgba(0, 0, 0, 0.8)',
