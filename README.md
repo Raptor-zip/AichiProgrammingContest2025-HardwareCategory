@@ -760,31 +760,6 @@ const createPianoKeys = useCallback(() => {
     // 鍵盤生成処理
 }, []);  // 依存配列が空なので初回のみ生成
 ```
-
-### ブラウザ互換性
-
-```mermaid
-graph TD
-    subgraph "完全サポート"
-        Chrome[Chrome ✅]
-        Firefox[Firefox ✅]
-        Safari[Safari ✅]
-        Edge[Edge ✅]
-    end
-
-    Chrome --> Features
-    Firefox --> Features
-    Safari --> Features
-    Edge --> Features
-
-    Features["WebSocket<br/>Web Audio API<br/>Three.js<br/>TypedArray"]
-
-    Safari -.制限.-> Limit["iOS Safari:<br/>ユーザージェスチャー<br/>必須"]
-
-    style Features fill:#9f9
-    style Limit fill:#ff9
-```
-
 ---
 
 ## ライセンスとクレジット
