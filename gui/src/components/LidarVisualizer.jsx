@@ -45,6 +45,9 @@ class PianoSynth {
         this.oscillators = new Map();
         this.gainNodes = new Map();
         this.waveType = 'sine'; // デフォルトはサイン波
+        this.decayEnabled = false; // 減衰機能のON/OFF
+        this.decayTime = 2.0; // 減衰時間（秒）
+        this.noteStartTimes = new Map(); // 各音の開始時刻
     }
 
     init() {
@@ -55,6 +58,31 @@ class PianoSynth {
 
     setWaveType(type) {
         this.waveType = type;
+    }
+
+    setDecayEnabled(enabled) {
+        this.decayEnabled = enabled;
+    }
+
+    updateDecay() {
+        // 減衰機能が有効な場合、各音の音量を時間経過に応じて減少
+        if (!this.decayEnabled || !this.audioContext) return;
+
+        const currentTime = this.audioContext.currentTime;
+        for (const [noteName, gainNode] of this.gainNodes.entries()) {
+            const startTime = this.noteStartTimes.get(noteName);
+            if (startTime) {
+                const elapsed = currentTime - startTime;
+                if (elapsed < this.decayTime) {
+                    // 指数関数的に減衰（0.3から0.05まで）
+                    const decay = 0.3 * Math.exp(-3 * elapsed / this.decayTime) + 0.05;
+                    gainNode.gain.setValueAtTime(decay, currentTime);
+                } else {
+                    // 減衰時間を超えたら最小音量に
+                    gainNode.gain.setValueAtTime(0.05, currentTime);
+                }
+            }
+        }
     }
 
     playNote(freq, noteName) {
@@ -81,6 +109,7 @@ class PianoSynth {
 
         this.oscillators.set(noteName, oscillator);
         this.gainNodes.set(noteName, gainNode);
+        this.noteStartTimes.set(noteName, this.audioContext.currentTime);
     }
 
     stopNote(noteName) {
@@ -92,6 +121,7 @@ class PianoSynth {
             oscillator.stop(this.audioContext.currentTime + 0.1);
             this.oscillators.delete(noteName);
             this.gainNodes.delete(noteName);
+            this.noteStartTimes.delete(noteName);
         }
     }
 
@@ -127,6 +157,7 @@ const LidarVisualizer = () => {
     const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
     const [octaveShift, setOctaveShift] = useState(0); // オクターブシフト (-2 ~ +2)
     const [waveType, setWaveType] = useState('sine'); // 波形タイプ
+    const [decayEnabled, setDecayEnabled] = useState(false); // 音の減衰ON/OFF
     const [flipHorizontal, setFlipHorizontal] = useState(false); // 左右反転
     const [flipVertical, setFlipVertical] = useState(false); // 上下反転
     const [rotate180, setRotate180] = useState(false); // 180度回転
@@ -140,6 +171,13 @@ const LidarVisualizer = () => {
     useEffect(() => { flipHorizontalRef.current = flipHorizontal; }, [flipHorizontal]);
     useEffect(() => { flipVerticalRef.current = flipVertical; }, [flipVertical]);
     useEffect(() => { rotate180Ref.current = rotate180; }, [rotate180]);
+
+    // 減衰機能のON/OFFをsynthに反映
+    useEffect(() => {
+        if (synthRef.current) {
+            synthRef.current.setDecayEnabled(decayEnabled);
+        }
+    }, [decayEnabled]);
 
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
@@ -335,16 +373,22 @@ const LidarVisualizer = () => {
                     }
                 }
 
-                // 鍵盤の色を更新
+                // 鍵盤の色と位置を更新（3D効果）
                 pianoKeysRef.current.forEach((keyMesh, index) => {
                     const note = PIANO_NOTES[index];
                     const isActive = detectedNotes.some(n => n.note === note.note);
 
+                    // デフォルトのY位置
+                    const defaultY = note.isBlack ? 0.02 : 0.01;
+                    const pressedY = note.isBlack ? -0.01 : -0.02; // 押されたときは下に移動
+
                     if (isActive) {
+                        // 押されている状態
                         keyMesh.material.color.setHex(0xffff00); // 黄色（踏まれている）
                         keyMesh.material.emissive.setHex(0xff8800);
+                        keyMesh.position.y = pressedY; // 下に移動
                     } else {
-                        // デフォルトの色に戻す
+                        // デフォルトの状態に戻す
                         if (note.isBlack) {
                             keyMesh.material.color.setHex(0x333333);
                             keyMesh.material.emissive.setHex(0x000000);
@@ -352,6 +396,7 @@ const LidarVisualizer = () => {
                             keyMesh.material.color.setHex(0xffffff);
                             keyMesh.material.emissive.setHex(0x000000);
                         }
+                        keyMesh.position.y = defaultY; // 元の位置に戻す
                     }
                 });
 
@@ -536,10 +581,10 @@ const LidarVisualizer = () => {
             const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
             const sprite = new THREE.Sprite(spriteMaterial);
 
-            // スプライトの位置（鍵盤の中心）- 180度反転が必要
+            // スプライトの位置（鍵盤の中心）
             const midAngle = (startRad + endRad) / 2;
             const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
-            sprite.position.x = -Math.cos(midAngle) * midRadius;
+            sprite.position.x = Math.cos(midAngle) * midRadius; // 符号を反転
             sprite.position.y = note.isBlack ? 0.05 : 0.04;
             sprite.position.z = -Math.sin(midAngle) * midRadius;
             sprite.scale.set(0.2, 0.1, 1);
@@ -579,7 +624,7 @@ const LidarVisualizer = () => {
         geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
 
         const material = new THREE.PointsMaterial({
-            size: 0.05,
+            size: 0.02,
             vertexColors: true,
             sizeAttenuation: true,
             transparent: true,
@@ -593,6 +638,12 @@ const LidarVisualizer = () => {
         const animate = () => {
             animationIdRef.current = requestAnimationFrame(animate);
             controls.update();
+
+            // 減衰機能が有効な場合、音量を更新
+            if (synthRef.current) {
+                synthRef.current.updateDecay();
+            }
+
             renderer.render(scene, camera);
         };
         animate();
@@ -904,6 +955,36 @@ const LidarVisualizer = () => {
                             </button>
                         ))}
                     </div>
+                </div>
+
+                {/* 音の減衰 */}
+                <div style={{
+                    marginTop: '12px',
+                    paddingTop: '12px',
+                    borderTop: '1px solid rgba(255,255,255,0.3)'
+                }}>
+                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
+                        📉 音の減衰
+                    </div>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setDecayEnabled(!decayEnabled);
+                        }}
+                        style={{
+                            padding: '8px 16px',
+                            fontSize: '12px',
+                            fontWeight: 'bold',
+                            background: decayEnabled ? '#00cc00' : '#666666',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '5px',
+                            cursor: 'pointer',
+                            width: '100%'
+                        }}
+                    >
+                        {decayEnabled ? '✅ ON (時間経過で減衰)' : '❌ OFF (一定音量)'}
+                    </button>
                 </div>
 
                 {/* 回転・反転コントロール */}
