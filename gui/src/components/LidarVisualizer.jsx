@@ -745,16 +745,15 @@ const LidarVisualizer = () => {
                             const isInDonut = isInDonutAngle && isInDonutRadius;
 
                             if (isInDonut) {
-                                // ドーナツ領域内: 明るく目立つ色（黄色系）
-                                colors[i * 3] = 1.0;     // R
-                                colors[i * 3 + 1] = 1.0; // G
-                                colors[i * 3 + 2] = 0.0; // B
+                                // ドーナツ領域内: 目立つ色
+                                colors[i * 3] = 0.0;     // R
+                                colors[i * 3 + 1] = 0.0; // G
+                                colors[i * 3 + 2] = 1.0; // B
                             } else {
-                                // ドーナツ領域外: 暗く半透明（青灰色）
-                                const normalizedDistance = Math.min(distance / 3.0, 1.0);
-                                colors[i * 3] = normalizedDistance * 0.3;
-                                colors[i * 3 + 1] = normalizedDistance * 0.3;
-                                colors[i * 3 + 2] = normalizedDistance * 0.5;
+                                // ドーナツ領域外
+                                colors[i * 3] = 0.3;
+                                colors[i * 3 + 1] = 0.3;
+                                colors[i * 3 + 2] = 0.5;
                             }
                         }
 
@@ -1040,7 +1039,7 @@ const LidarVisualizer = () => {
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(360 * 3);
         const colors = new Float32Array(360 * 3);
-        const alphas = new Float32Array(360); // 透明度用の配列
+        const alphas = new Float32Array(360);
 
         for (let i = 0; i < 360; i++) {
             positions[i * 3] = 0.0;
@@ -1051,24 +1050,95 @@ const LidarVisualizer = () => {
             colors[i * 3 + 1] = 0.0;
             colors[i * 3 + 2] = 0.5;
 
-            alphas[i] = 1.0; // 初期値は完全不透明
+            alphas[i] = 1.0;
         }
 
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         geometry.setAttribute('alpha', new THREE.BufferAttribute(alphas, 1));
 
-        const material = new THREE.PointsMaterial({
-            size: 0.02,
+        // 点描画用テクスチャ: コアはシャープ、グローはふわっと
+        const createCoreTexture = (size = 64) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = size;
+            const ctx = canvas.getContext('2d');
+
+            const cx = size / 2;
+            const cy = size / 2;
+            const r = size * 0.22; // コアは小さめ
+
+            ctx.clearRect(0, 0, size, size);
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(255,255,255,1.0)';
+            ctx.fill();
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.minFilter = THREE.LinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            tex.needsUpdate = true;
+            return tex;
+        };
+
+        const coreTexture = createCoreTexture(64);
+
+        // コア（中心）マテリアル: シャープな見た目
+        const coreMaterial = new THREE.PointsMaterial({
+            size: 0.04,
+            map: coreTexture,
             vertexColors: true,
             sizeAttenuation: true,
             transparent: true,
-            opacity: 1.0
+            depthWrite: false,
+            alphaTest: 0.01,
         });
 
-        const points = new THREE.Points(geometry, material);
-        scene.add(points);
-        pointsRef.current = points;
+        // 各点の外周に白い輪郭（Outline）を付けるためのテクスチャを生成
+        const createOutlineTexture = (size = 128) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = size;
+            const ctx = canvas.getContext('2d');
+
+            const cx = size / 2;
+            const cy = size / 2;
+            const r = size / 2;
+
+            // 中心は透明、外側に向かって白のリングを描く
+            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+            grad.addColorStop(0.0, 'rgba(255,255,255,0.0)');
+            grad.addColorStop(0.45, 'rgba(255,255,255,1.0)');
+            grad.addColorStop(0.55, 'rgba(255,255,255,1.0)');
+            grad.addColorStop(1.0, 'rgba(255,255,255,0.0)');
+
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, size, size);
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.minFilter = THREE.LinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            tex.needsUpdate = true;
+            return tex;
+        };
+
+        const outlineTexture = createOutlineTexture(128);
+        const outlineMaterial = new THREE.PointsMaterial({
+            size: 0.055, // core より少し大きめにして輪郭を表示
+            map: outlineTexture,
+            color: 0xffffff,
+            vertexColors: false,
+            sizeAttenuation: true,
+            transparent: true,
+            depthWrite: false,
+        });
+
+        // まず輪郭を描画（背景）、その上にコアを重ねる
+        const pointsOutline = new THREE.Points(geometry, outlineMaterial);
+        scene.add(pointsOutline);
+
+        const pointsCore = new THREE.Points(geometry, coreMaterial);
+        scene.add(pointsCore);
+        pointsRef.current = pointsCore;
 
         const animate = () => {
             animationIdRef.current = requestAnimationFrame(animate);
@@ -1099,8 +1169,21 @@ const LidarVisualizer = () => {
             if (rendererRef.current && containerRef.current) {
                 containerRef.current.removeChild(rendererRef.current.domElement);
             }
+            // 点群オブジェクトをシーンから削除し、マテリアル/テクスチャを破棄
+            try {
+                if (pointsCore) {
+                    scene.remove(pointsCore);
+                }
+            } catch (e) {}
+
             geometry.dispose();
-            material.dispose();
+            try { coreMaterial.dispose(); } catch (e) {}
+            try { if (coreTexture) coreTexture.dispose(); } catch (e) {}
+            // pointsOutlineがあれば削除/破棄
+            try { if (pointsOutline) scene.remove(pointsOutline); } catch (e) {}
+            try { if (outlineMaterial) outlineMaterial.dispose(); } catch (e) {}
+            try { if (outlineTexture) outlineTexture.dispose(); } catch (e) {}
+
             renderer.dispose();
         };
     }, []);
