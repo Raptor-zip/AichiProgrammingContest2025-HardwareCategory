@@ -415,7 +415,7 @@ const LidarVisualizer = () => {
             const planeW = 0.2;
             const planeH = 0.1;
             const planeGeo = new THREE.PlaneGeometry(planeW, planeH);
-            const planeMat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: true, side: THREE.DoubleSide });
+            const planeMat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: true, depthWrite: false, side: THREE.DoubleSide });
             const labelMesh = new THREE.Mesh(planeGeo, planeMat);
 
             // 鍵盤の中心位置（ワールド座標） — X/Z は鍵盤中心、Y は鍵盤の上面に合わせる
@@ -441,6 +441,8 @@ const LidarVisualizer = () => {
             // 子オブジェクトは親に合わせた向きになる（ローカル回転0でOK）
             // メッシュ自体は回転させず、テクスチャ回転で向きを調整しているためローカル回転は0にする
             labelMesh.rotation.set(0, 0, 0);
+            // レンダリング順序と深度書き込みを制御して、点群がラベルの上に常に描画されるようにする
+            labelMesh.renderOrder = 0;
             labelMesh.scale.set(1, 1, 1);
 
             // 保存しておく（後で掃除や参照のため）。userData にはローカル座標の y を保存して
@@ -761,27 +763,58 @@ const LidarVisualizer = () => {
                         const innerR = innerRadiusRef.current;
                         const outerR = outerRadiusRef.current;
 
+                        // ラベルのワールドYを取得しておく（鍵盤の踏み込みに追従する目的）
+                        const currentPianoNotes = pianoNotesRef.current;
+                        const angleRange = endAngle - startAngle;
+                        const degreesPerKey = currentPianoNotes.length > 0 ? angleRange / currentPianoNotes.length : 360;
+                        const labelWorldYs = [];
+                        const _tmpVec = new THREE.Vector3();
+                        if (pianoLabelsRef.current && pianoLabelsRef.current.length > 0) {
+                            pianoLabelsRef.current.forEach((lbl, idx) => {
+                                if (!lbl) {
+                                    labelWorldYs[idx] = -Infinity;
+                                    return;
+                                }
+                                // getWorldPosition はメッシュの現在のワールド座標を返す
+                                lbl.getWorldPosition(_tmpVec);
+                                labelWorldYs[idx] = _tmpVec.y;
+                            });
+                        }
+
                         for (let i = 0; i < 360; i++) {
                             const angle = (i * Math.PI) / 180.0;
                             const distance = transformedDistances[i];
 
                             positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
-                            positions[i * 3 + 1] = pointHeightRef.current; // 鍵盤より上に配置
-                            positions[i * 3 + 2] = Math.sin(angle) * distance;
 
-                            // ドーナツ領域判定
+                            // デフォルトのY位置
+                            let yPos = pointHeightRef.current;
+
+                            // この点が鍵盤ドーナツ領域上にあるかをチェックし、該当鍵があれば鍵盤（ラベル）上面より上に出す
                             const angleDeg = i - 90;
                             const isInDonutAngle = angleDeg >= startAngle && angleDeg <= endAngle;
                             const isInDonutRadius = distance >= innerR && distance <= outerR;
-                            const isInDonut = isInDonutAngle && isInDonutRadius;
+                            if (isInDonutAngle && isInDonutRadius && degreesPerKey > 0) {
+                                const relativeAngle = angleDeg - startAngle;
+                                const keyIndex = Math.floor(relativeAngle / degreesPerKey);
+                                if (keyIndex >= 0 && keyIndex < labelWorldYs.length) {
+                                    const labelWorldY = labelWorldYs[keyIndex];
+                                    if (labelWorldY !== -Infinity) {
+                                        // ラベルのワールドYより少し上にして表示（Z-fighting回避）
+                                        yPos = Math.max(pointHeightRef.current, labelWorldY + 0.002);
+                                    }
+                                }
+                            }
 
-                            if (isInDonut) {
-                                // ドーナツ領域内: 目立つ色
-                                colors[i * 3] = 0.0;     // R
-                                colors[i * 3 + 1] = 0.0; // G
-                                colors[i * 3 + 2] = 1.0; // B
+                            positions[i * 3 + 1] = yPos;
+                            positions[i * 3 + 2] = Math.sin(angle) * distance;
+
+                            // カラーは従来通りドーナツ判定で分ける
+                            if (isInDonutAngle && isInDonutRadius) {
+                                colors[i * 3] = 0.0;
+                                colors[i * 3 + 1] = 0.0;
+                                colors[i * 3 + 2] = 1.0;
                             } else {
-                                // ドーナツ領域外
                                 colors[i * 3] = 0.3;
                                 colors[i * 3 + 1] = 0.3;
                                 colors[i * 3 + 2] = 0.5;
@@ -1152,8 +1185,9 @@ const LidarVisualizer = () => {
         });
 
         // まず輪郭を描画（背景）、その上にコアを重ねる
-        const pointsOutline = new THREE.Points(geometry, outlineMaterial);
-        scene.add(pointsOutline);
+    const pointsOutline = new THREE.Points(geometry, outlineMaterial);
+    pointsOutline.renderOrder = 1;
+    scene.add(pointsOutline);
 
         // コア用テクスチャとマテリアルを作成
         const coreTexture = createCoreTexture(64);
@@ -1168,9 +1202,10 @@ const LidarVisualizer = () => {
         });
 
         // まず輪郭を描画（背景）、その上にコアを重ねる
-        const pointsCore = new THREE.Points(geometry, coreMaterial);
-        scene.add(pointsCore);
-        pointsRef.current = pointsCore;
+    const pointsCore = new THREE.Points(geometry, coreMaterial);
+    pointsCore.renderOrder = 1;
+    scene.add(pointsCore);
+    pointsRef.current = pointsCore;
 
         const animate = () => {
             animationIdRef.current = requestAnimationFrame(animate);
