@@ -73,12 +73,12 @@ const LidarVisualizer = () => {
             context.textBaseline = 'middle';
 
             const noteNames = notes.map(n => n.note).join(', ');
-            context.font = 'bold 50px Arial';
+            context.font = 'bold 80px Arial';
             context.shadowBlur = 10;
             context.shadowOffsetX = 3;
             context.shadowOffsetY = 3;
-            context.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-            context.lineWidth = 5;
+            context.strokeStyle = 'rgba(0, 0, 0, 1)';
+            context.lineWidth = 30;
             context.strokeText(noteNames, 512, 350);
             context.fillStyle = 'rgba(255, 255, 255, 0.9)';
             context.fillText(noteNames, 512, 350);
@@ -454,6 +454,35 @@ const LidarVisualizer = () => {
             }
         };
 
+        // 再接続をスケジュールする（指数バックオフに近い挙動 + 小さなジッタ）
+        const scheduleReconnect = (reason: string) => {
+            console.warn(`Scheduling reconnect: ${reason}`);
+
+            // 既に再接続タイマーがある場合は上書きしない
+            if (reconnectTimerRef.current) return;
+
+            reconnectAttemptsRef.current++;
+            if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+                console.error(`Failed to reconnect after ${reconnectAttemptsRef.current} attempts. Giving up.`);
+                setWsStatus('disconnected');
+                // 最終手段としてページをリロードする前に少し待つ
+                setTimeout(() => window.location.reload(), 2000);
+                return;
+            }
+
+            // 緩やかなバックオフ: 1s,2s,3s... capped to 5s + small jitter
+            const baseDelay = Math.min(1000 * reconnectAttemptsRef.current, 5000);
+            const jitter = Math.floor(Math.random() * 400); // 0-399ms
+            const delay = baseDelay + jitter;
+
+            console.log(`Reconnecting in ${delay}ms... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
+            setWsStatus('connecting');
+            reconnectTimerRef.current = window.setTimeout(() => {
+                reconnectTimerRef.current = null;
+                connectWebSocket();
+            }, delay);
+        };
+
         // WebSocket強制切断（再接続トリガー）
         const forceReconnect = (reason: string) => {
             console.warn(`${reason}. Forcing reconnection...`);
@@ -471,20 +500,61 @@ const LidarVisualizer = () => {
             // タイマーをクリア
             cleanupWebSocketTimers();
 
-            // WebSocketを閉じる（これがoncloseイベントをトリガー）
-            if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED && wsRef.current.readyState !== WebSocket.CLOSING) {
-                wsRef.current.close();
+            // WebSocket が存在する場合は適切に切断またはデタッチする
+            if (wsRef.current) {
+                try {
+                    const state = wsRef.current.readyState;
+                    if (state === WebSocket.OPEN) {
+                        // close() を呼んで onclose の処理に委ねる
+                        wsRef.current.close();
+                    } else if (state === WebSocket.CONNECTING) {
+                        // CONNECTING の場合、ブラウザでは close() が "closed before the connection is established" を出すことがあるため
+                        // イベントハンドラを外して参照を切る（onclose を待たずに再接続スケジュール）
+                        try { wsRef.current.onopen = null; } catch (e) { }
+                        try { wsRef.current.onmessage = null; } catch (e) { }
+                        try { wsRef.current.onclose = null; } catch (e) { }
+                        try { wsRef.current.onerror = null; } catch (e) { }
+                        wsRef.current = null;
+                        // 直接再接続をスケジュール
+                        scheduleReconnect(reason + ' (detached CONNECTING socket)');
+                        return;
+                    } else {
+                        // CLOSING/CLOSED の場合は参照を切る
+                        wsRef.current = null;
+                    }
+                } catch (e) {
+                    console.warn('Error while forcing websocket reconnect cleanup', e);
+                    wsRef.current = null;
+                }
+            }
+
+            // 上記で close() を呼んだ場合、onclose 側で scheduleReconnect を行う。ただし念のためここでもスケジュールされていなければスケジュールする
+            if (!reconnectTimerRef.current) {
+                scheduleReconnect(reason + ' (after close)');
             }
         };
 
         // WebSocket接続関数
         const connectWebSocket = () => {
+            // 既に別の接続が進行中/確立されている場合は重複を避ける
+            if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+                console.log('connectWebSocket: socket already open or connecting, skipping new connect');
+                return;
+            }
+
             console.log(`Connecting to WebSocket: ${url} (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})`);
             setWsStatus('connecting');
 
-            const ws = new WebSocket(url);
-            ws.binaryType = 'arraybuffer';
-            wsRef.current = ws;
+            let ws: WebSocket | null = null;
+            try {
+                ws = new WebSocket(url);
+                ws.binaryType = 'arraybuffer';
+                wsRef.current = ws;
+            } catch (err) {
+                console.error('connectWebSocket: WebSocket constructor failed', err);
+                scheduleReconnect('WebSocket constructor failed');
+                return;
+            }
 
             ws.onopen = () => {
                 console.log('WebSocket connected');
@@ -554,26 +624,25 @@ const LidarVisualizer = () => {
                 activeNotesRef.current.clear();
                 setCurrentNotes([]);
 
-                // 再接続を試みる
-                reconnectAttemptsRef.current++;
-                if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-                    const delay = Math.min(1000 * reconnectAttemptsRef.current, 5000); // 1秒、2秒、3秒、4秒、5秒...最大5秒
-                    console.log(`Reconnecting in ${delay}ms... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
-                    setWsStatus('connecting');
-                    reconnectTimerRef.current = setTimeout(() => {
-                        connectWebSocket();
-                    }, delay);
-                } else {
-                    console.error(`Failed to reconnect after ${maxReconnectAttempts} attempts. Reloading page in 2 seconds...`);
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 2000);
+                // ソケット参照を切る（もし同一なら）
+                if (wsRef.current === ws) wsRef.current = null;
+
+                // 再接続をスケジュール（重複を避ける）
+                if (!reconnectTimerRef.current) {
+                    scheduleReconnect('onclose event');
                 }
             };
 
             ws.onerror = (e) => {
-                console.error('WebSocket error:', e);
+                console.error('WebSocket error event:', e, 'socket readyState:', ws && ws.readyState, 'ref readyState:', wsRef.current && wsRef.current.readyState);
                 setWsStatus('error');
+                // エラー発生時は安全に強制再接続処理へ
+                try {
+                    forceReconnect('WebSocket error event');
+                } catch (err) {
+                    console.warn('forceReconnect failed inside onerror:', err);
+                    if (!reconnectTimerRef.current) scheduleReconnect('onerror fallback');
+                }
             };
 
             let receivedFrames = 0;
@@ -875,9 +944,25 @@ const LidarVisualizer = () => {
             // WebSocket関連タイマーをクリア
             cleanupWebSocketTimers();
 
-            // WebSocketを閉じる
-            if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
-                wsRef.current.close();
+            // WebSocketを適切に破棄
+            if (wsRef.current) {
+                try {
+                    const state = wsRef.current.readyState;
+                    if (state === WebSocket.OPEN) {
+                        wsRef.current.close();
+                    } else if (state === WebSocket.CONNECTING) {
+                        // CONNECTING の場合はイベントを外して参照を切る（ブラウザの警告を防ぐため）
+                        try { wsRef.current.onopen = null; } catch (e) { }
+                        try { wsRef.current.onmessage = null; } catch (e) { }
+                        try { wsRef.current.onclose = null; } catch (e) { }
+                        try { wsRef.current.onerror = null; } catch (e) { }
+                        wsRef.current = null;
+                    } else {
+                        wsRef.current = null;
+                    }
+                } catch (e) {
+                    wsRef.current = null;
+                }
             }
 
             // すべての音を停止
@@ -901,8 +986,8 @@ const LidarVisualizer = () => {
             1000
         );
 
-    // 鍵盤の中央角度を計算（LiDARの0度=前方なので-90度オフセット）
-    const centerAngle = ((startAngleRef.current + endAngleRef.current) / 2.0) - 90;
+        // 鍵盤の中央角度を計算（LiDARの0度=前方なので-90度オフセット）
+        const centerAngle = ((startAngleRef.current + endAngleRef.current) / 2.0) - 90;
         const centerAngleRad = (centerAngle * Math.PI) / 180; // 180度反転
 
         const cameraHeight = 1.5;
@@ -966,6 +1051,7 @@ const LidarVisualizer = () => {
         const centerSprite = new THREE.Sprite(centerSpriteMaterial);
         centerSprite.position.set(0, 0.2, 0); // 円の中心、少し上
         centerSprite.scale.set(1.5, 0.75, 1); // サイズ調整
+        centerSprite.renderOrder = 2; // 点群よりも手前に表示させる
         scene.add(centerSprite);
         centerTextRef.current = centerSprite;
 
@@ -1057,9 +1143,9 @@ const LidarVisualizer = () => {
         });
 
         // まず輪郭を描画（背景）、その上にコアを重ねる
-    const pointsOutline = new THREE.Points(geometry, outlineMaterial);
-    pointsOutline.renderOrder = 1;
-    scene.add(pointsOutline);
+        const pointsOutline = new THREE.Points(geometry, outlineMaterial);
+        pointsOutline.renderOrder = 1;
+        scene.add(pointsOutline);
 
         // コア用テクスチャとマテリアルを作成
         const coreTexture = createCoreTexture(64);
@@ -1074,10 +1160,10 @@ const LidarVisualizer = () => {
         });
 
         // まず輪郭を描画（背景）、その上にコアを重ねる
-    const pointsCore = new THREE.Points(geometry, coreMaterial);
-    pointsCore.renderOrder = 1;
-    scene.add(pointsCore);
-    pointsRef.current = pointsCore;
+        const pointsCore = new THREE.Points(geometry, coreMaterial);
+        pointsCore.renderOrder = 1;
+        scene.add(pointsCore);
+        pointsRef.current = pointsCore;
 
         const animate = () => {
             animationIdRef.current = requestAnimationFrame(animate);
@@ -1113,15 +1199,15 @@ const LidarVisualizer = () => {
                 if (pointsCore) {
                     scene.remove(pointsCore);
                 }
-            } catch (e) {}
+            } catch (e) { }
 
             geometry.dispose();
-            try { coreMaterial.dispose(); } catch (e) {}
-            try { if (coreTexture) coreTexture.dispose(); } catch (e) {}
+            try { coreMaterial.dispose(); } catch (e) { }
+            try { if (coreTexture) coreTexture.dispose(); } catch (e) { }
             // pointsOutlineがあれば削除/破棄
-            try { if (pointsOutline) scene.remove(pointsOutline); } catch (e) {}
-            try { if (outlineMaterial) outlineMaterial.dispose(); } catch (e) {}
-            try { if (outlineTexture) outlineTexture.dispose(); } catch (e) {}
+            try { if (pointsOutline) scene.remove(pointsOutline); } catch (e) { }
+            try { if (outlineMaterial) outlineMaterial.dispose(); } catch (e) { }
+            try { if (outlineTexture) outlineTexture.dispose(); } catch (e) { }
 
             renderer.dispose();
         };
