@@ -45,7 +45,7 @@ const LidarVisualizer = () => {
     const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
     const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
     const boundaryMarginRatioRef = useRef(0.2);
-    const pointHeightRef = useRef(0.1);
+    const pointHeightRef = useRef(0.07);
     // WebSocket再接続用
     const reconnectAttemptsRef = useRef(0); // 再接続試行回数
     const reconnectTimerRef = useRef<number | null>(null); // 再接続タイマー
@@ -106,15 +106,18 @@ const LidarVisualizer = () => {
     const [flipHorizontal, setFlipHorizontal] = useState<boolean>(false); // 左右反転
     const [flipVertical, setFlipVertical] = useState<boolean>(false); // 上下反転
     const [rotate180, setRotate180] = useState<boolean>(false); // 180度回転
-    // 可変な音検出レンジ（UIで変更可能にする）
     const [innerRadius, setInnerRadius] = useState(PIANO_CONFIG.innerRadius);
     const [outerRadius, setOuterRadius] = useState(PIANO_CONFIG.outerRadius);
     const [boundaryMarginRatio, setBoundaryMarginRatio] = useState(0.2);
+    const [startAngle, setStartAngle] = useState<number>(PIANO_CONFIG.startAngle);
+    const [endAngle, setEndAngle] = useState<number>(PIANO_CONFIG.endAngle);
 
     // 反転/回転フラグのref版（WebSocketハンドラのクロージャ問題を回避）
     const flipHorizontalRef = useRef(flipHorizontal);
     const flipVerticalRef = useRef(flipVertical);
     const rotate180Ref = useRef(rotate180);
+    const startAngleRef = useRef<number>(startAngle);
+    const endAngleRef = useRef<number>(endAngle);
 
     // state -> ref 同期
     useEffect(() => { flipHorizontalRef.current = flipHorizontal; }, [flipHorizontal]);
@@ -125,13 +128,14 @@ const LidarVisualizer = () => {
     useEffect(() => { innerRadiusRef.current = innerRadius; }, [innerRadius]);
     useEffect(() => { outerRadiusRef.current = outerRadius; }, [outerRadius]);
     useEffect(() => { boundaryMarginRatioRef.current = boundaryMarginRatio; }, [boundaryMarginRatio]);
+    useEffect(() => { startAngleRef.current = startAngle; endAngleRef.current = endAngle; }, [startAngle, endAngle]);
 
     // ピアノ鍵盤を作成する関数（useCallbackでメモ化）
     const createPianoKeys = useCallback(() => {
         const scene = sceneRef.current;
         if (!scene) return;
-
-        const { startAngle, endAngle } = PIANO_CONFIG;
+        const startAngle = startAngleRef.current;
+        const endAngle = endAngleRef.current;
         const innerR = innerRadiusRef.current;
         const outerR = outerRadiusRef.current;
         const angleRange = endAngle - startAngle;
@@ -367,6 +371,37 @@ const LidarVisualizer = () => {
         }
     }, [innerRadius, outerRadius, createPianoKeys]);
 
+    // 開始角度・終了角度が変更されたら鍵盤を再生成
+    useEffect(() => {
+        if (sceneRef.current) {
+            // 既存の鍵盤をクリア
+            pianoKeysRef.current.forEach(key => {
+                if (key.geometry) key.geometry.dispose();
+                if (key.material) key.material.dispose();
+                sceneRef.current.remove(key);
+            });
+            pianoEdgesRef.current.forEach(edge => {
+                if (edge.geometry) edge.geometry.dispose();
+                if (edge.material) edge.material.dispose();
+                sceneRef.current.remove(edge);
+            });
+            pianoLabelsRef.current.forEach(label => {
+                if (label.geometry) label.geometry.dispose();
+                if (label.material) {
+                    if (label.material.map) label.material.map.dispose();
+                    label.material.dispose();
+                }
+                sceneRef.current.remove(label);
+            });
+            pianoKeysRef.current = [];
+            pianoEdgesRef.current = [];
+            pianoLabelsRef.current = [];
+
+            // 鍵盤を再生成
+            createPianoKeys();
+        }
+    }, [startAngle, endAngle, createPianoKeys]);
+
     // 減衰機能のON/OFFをsynthに反映
     useEffect(() => {
         if (synthRef.current) {
@@ -590,8 +625,8 @@ const LidarVisualizer = () => {
                     if (pointsRef.current) {
                         const positions = pointsRef.current.geometry.attributes.position.array;
                         const colors = pointsRef.current.geometry.attributes.color.array;
-                        const startAngle = PIANO_CONFIG.startAngle;
-                        const endAngle = PIANO_CONFIG.endAngle;
+                        const startAngle = startAngleRef.current;
+                        const endAngle = endAngleRef.current;
                         const innerR = innerRadiusRef.current;
                         const outerR = outerRadiusRef.current;
 
@@ -649,7 +684,7 @@ const LidarVisualizer = () => {
                             } else {
                                 colors[i * 3] = 0.3;
                                 colors[i * 3 + 1] = 0.3;
-                                colors[i * 3 + 2] = 0.5;
+                                colors[i * 3 + 2] = 0.3;
                             }
                         }
 
@@ -659,8 +694,8 @@ const LidarVisualizer = () => {
 
                     // ピアノ鍵盤の足検出
                     const detectedNotes: Note[] = [];
-                    const startAngle = PIANO_CONFIG.startAngle;
-                    const endAngle = PIANO_CONFIG.endAngle;
+                    const startAngle = startAngleRef.current;
+                    const endAngle = endAngleRef.current;
                     const innerR = innerRadiusRef.current;
                     const outerR = outerRadiusRef.current;
                     const currentPianoNotes = pianoNotesRef.current;
@@ -866,8 +901,8 @@ const LidarVisualizer = () => {
             1000
         );
 
-        // 鍵盤の中央角度を計算（LiDARの0度=前方なので-90度オフセット）
-        const centerAngle = (PIANO_CONFIG.startAngle + PIANO_CONFIG.endAngle) / 2.0 - 90;
+    // 鍵盤の中央角度を計算（LiDARの0度=前方なので-90度オフセット）
+    const centerAngle = ((startAngleRef.current + endAngleRef.current) / 2.0) - 90;
         const centerAngleRad = (centerAngle * Math.PI) / 180; // 180度反転
 
         const cameraHeight = 1.5;
@@ -1159,7 +1194,6 @@ const LidarVisualizer = () => {
                     🎯 SonicRing
                 </div>
                 <div>WebSocket: <span style={{ color: wsStatus === 'connected' ? '#0f0' : '#f00' }}>{wsStatus}</span></div>
-                <div>Points: 360 (1° resolution)</div>
                 <div>Update Rate: {fps} Hz</div>
                 <div>Frame Count: {frameCount}</div>
                 <div>Timestamp: {lastTimestamp} ms</div>
@@ -1243,8 +1277,39 @@ const LidarVisualizer = () => {
                         }}
                     />
 
-                    <div>開始角度: {PIANO_CONFIG.startAngle}°</div>
-                    <div>終了角度: {PIANO_CONFIG.endAngle}°</div>
+                    <div>開始角度: <strong>{startAngle}°</strong></div>
+                    <input
+                        type="range"
+                        min={-90}
+                        max={270}
+                        step={1}
+                        value={startAngle}
+                        onChange={(e) => {
+                            e.stopPropagation();
+                            let v = parseInt(e.target.value, 10);
+                            // start は end より小さくする（最小差1度）
+                            if (v >= endAngle) v = endAngle - 1;
+                            setStartAngle(v);
+                            startAngleRef.current = v;
+                        }}
+                    />
+
+                    <div>終了角度: <strong>{endAngle}°</strong></div>
+                    <input
+                        type="range"
+                        min={-90}
+                        max={270}
+                        step={1}
+                        value={endAngle}
+                        onChange={(e) => {
+                            e.stopPropagation();
+                            let v = parseInt(e.target.value, 10);
+                            // end は start より大きくする（最小差1度）
+                            if (v <= startAngle) v = startAngle + 1;
+                            setEndAngle(v);
+                            endAngleRef.current = v;
+                        }}
+                    />
 
 
                     <div>鍵盤境界除外割合: <strong>{(boundaryMarginRatio * 100).toFixed(0)}%</strong></div>
