@@ -22,6 +22,8 @@ let PIANO_NOTES = generatePianoNotes(
 
 const LidarVisualizer = () => {
     const containerRef = useRef<HTMLDivElement | null>(null);
+    // wrapperRef: root div that contains UI + containerRef; use this for fullscreen so UI stays visible
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
     const sceneRef = useRef<THREE.Scene | null>(null);
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
     const pointsRef = useRef<THREE.Points | null>(null);
@@ -111,6 +113,8 @@ const LidarVisualizer = () => {
     const [boundaryMarginRatio, setBoundaryMarginRatio] = useState(0.2);
     const [startAngle, setStartAngle] = useState<number>(PIANO_CONFIG.startAngle);
     const [endAngle, setEndAngle] = useState<number>(PIANO_CONFIG.endAngle);
+    const [mobilePanelsVisible, setMobilePanelsVisible] = useState<boolean>(false);
+    const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
     // 反転/回転フラグのref版（WebSocketハンドラのクロージャ問題を回避）
     const flipHorizontalRef = useRef(flipHorizontal);
@@ -408,6 +412,15 @@ const LidarVisualizer = () => {
             synthRef.current.setDecayEnabled(decayEnabled);
         }
     }, [decayEnabled]);
+
+    // フルスクリーン状態の同期
+    useEffect(() => {
+        const onFsChange = () => {
+            setIsFullscreen(Boolean(document.fullscreenElement));
+        };
+        document.addEventListener('fullscreenchange', onFsChange);
+        return () => document.removeEventListener('fullscreenchange', onFsChange);
+    }, []);
 
     // 演奏中の音が変わったら中央テキストを更新
     useEffect(() => {
@@ -1214,7 +1227,44 @@ const LidarVisualizer = () => {
     }, []);
 
     return (
-        <div style={{ width: '100%', height: '100vh' }} onClick={enableAudio}>
+        <div ref={wrapperRef} className={mobilePanelsVisible ? 'mobile-panels-visible' : ''} style={{ width: '100%', height: '100vh' }} onClick={enableAudio}>
+            {/* モバイル用トグルボタン（幅が狭いときに表示される） */}
+            <button
+                className="mobile-toggle"
+                onClick={(e) => { e.stopPropagation(); setMobilePanelsVisible(v => !v); }}
+                aria-label="Toggle panels"
+                title="表示/非表示"
+            >
+                ☰
+            </button>
+            {/* 全画面切替ボタン */}
+            <button
+                className="fullscreen-toggle"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    try {
+                        if (!document.fullscreenElement) {
+                            // Request fullscreen on the wrapper so all UI remains visible
+                            if (wrapperRef.current && (wrapperRef.current as any).requestFullscreen) {
+                                (wrapperRef.current as any).requestFullscreen();
+                            } else if (containerRef.current && (containerRef.current as any).requestFullscreen) {
+                                // fallback to container if wrapper isn't available
+                                (containerRef.current as any).requestFullscreen();
+                            } else if (document.documentElement.requestFullscreen) {
+                                document.documentElement.requestFullscreen();
+                            }
+                        } else {
+                            if (document.exitFullscreen) document.exitFullscreen();
+                        }
+                    } catch (err) {
+                        console.warn('Failed to toggle fullscreen', err);
+                    }
+                }}
+                aria-label="Toggle fullscreen"
+                title="全画面切替"
+            >
+                {isFullscreen ? '⤢' : '⤡'}
+            </button>
             <div
                 ref={containerRef}
                 style={{
@@ -1225,45 +1275,17 @@ const LidarVisualizer = () => {
             />
 
             {/* 中央上部: タイトル */}
-            <div
-                style={{
-                    position: 'absolute',
-                    top: '20px',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    textAlign: 'center',
-                    pointerEvents: 'none'
-                }}
-            >
-                <div style={{
-                    fontSize: '100px',
-                    fontWeight: 'bold',
-                    fontFamily: "'Noto Serif JP', serif",
-                    background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 50%, #FF6347 100%)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    backgroundClip: 'text',
-                    textShadow: '0 0 20px rgba(255, 215, 0, 0.5)',
-                    filter: 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.8)) drop-shadow(0 0 15px rgba(255, 215, 0, 0.4))',
-                    letterSpacing: '8px',
-                    padding: '10px 20px'
-                }}>
-                    ピアノ
-                </div>
-                <div style={{
-                    fontSize: '30px',
-                    color: 'rgba(255, 255, 255, 0.9)',
-                    fontWeight: 'bold',
-                    textShadow: '0 2px 4px rgba(0, 0, 0, 0.8)',
-                    marginTop: '-10px',
-                    letterSpacing: '4px'
-                }}>
-                    LiDAR FOOT PIANO
-                </div>
+            <div className="title-container" aria-hidden>
+                <div className="title-main">ピアノ</div>
+                <div className="title-sub">LiDAR FOOT PIANO</div>
             </div>
+
+            {/* fullscreenchange イベントで状態を同期 */}
+            {/* useEffect below ensures isFullscreen state follows document.fullscreenElement */}
 
             {/* 左上: LiDAR情報 */}
             <div
+                className="panel-left"
                 style={{
                     position: 'absolute',
                     top: 10,
@@ -1311,6 +1333,7 @@ const LidarVisualizer = () => {
 
             {/* 右上: ピアノ設定 */}
             <div
+                className="panel-right"
                 style={{
                     position: 'absolute',
                     top: 10,
