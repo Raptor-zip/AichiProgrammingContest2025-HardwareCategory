@@ -1238,7 +1238,7 @@ const LidarVisualizer = () => {
                 <div style={{
                     fontSize: '100px',
                     fontWeight: 'bold',
-                    fontFamily: 'serif',
+                    fontFamily: "'Noto Serif JP', serif",
                     background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 50%, #FF6347 100%)',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
@@ -1272,7 +1272,7 @@ const LidarVisualizer = () => {
                     background: 'rgba(0, 0, 0, 0.7)',
                     padding: '10px',
                     borderRadius: '5px',
-                    fontFamily: 'monospace',
+                    fontFamily: "'Noto Sans JP', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
                     fontSize: '14px'
                 }}
             >
@@ -1319,7 +1319,7 @@ const LidarVisualizer = () => {
                     background: 'rgba(0, 0, 0, 0.7)',
                     padding: '10px',
                     borderRadius: '5px',
-                    fontFamily: 'monospace',
+                    fontFamily: "'Noto Sans JP', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
                     fontSize: '12px'
                 }}
             >
