@@ -213,6 +213,7 @@ const LidarVisualizer = () => {
     const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
     const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
     const boundaryMarginRatioRef = useRef(0.2);
+    const pointHeightRef = useRef(0.1);
     // WebSocket再接続用
     const reconnectAttemptsRef = useRef(0); // 再接続試行回数
     const reconnectTimerRef = useRef(null); // 再接続タイマー
@@ -403,19 +404,49 @@ const LidarVisualizer = () => {
             context.fillText(note.note, 256, 128);
 
             const texture = new THREE.CanvasTexture(canvas);
-            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
-            const sprite = new THREE.Sprite(spriteMaterial);
+            texture.minFilter = THREE.LinearFilter;
+            texture.magFilter = THREE.LinearFilter;
+            // テクスチャを中心回転させることで、メッシュを回転させずに文字の向きを調整できる
+            texture.center.set(0.5, 0.5);
+            texture.rotation = Math.PI; // 180度回転（上下反転・向き揃え）
+            texture.needsUpdate = true;
 
-            // スプライトの位置（鍵盤の中心）
+            // 平面ジオメトリでラベルを作り、鍵盤の上面に貼り付ける（子要素として追加）
+            const planeW = 0.2;
+            const planeH = 0.1;
+            const planeGeo = new THREE.PlaneGeometry(planeW, planeH);
+            const planeMat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: true, side: THREE.DoubleSide });
+            const labelMesh = new THREE.Mesh(planeGeo, planeMat);
+
+            // 鍵盤の中心位置（ワールド座標） — X/Z は鍵盤中心、Y は鍵盤の上面に合わせる
             const midAngle = (startRad + endRad) / 2;
             const midRadius = (keyInnerRadius + keyOuterRadius) / 2;
-            sprite.position.x = Math.cos(midAngle) * midRadius;
-            sprite.position.y = note.isBlack ? 0.08 : 0.07;
-            sprite.position.z = -Math.sin(midAngle) * midRadius;
-            sprite.scale.set(0.2, 0.1, 1);
+            const worldX = Math.cos(midAngle) * midRadius;
+            const worldZ = -Math.sin(midAngle) * midRadius;
 
-            scene.add(sprite);
-            labels.push(sprite);
+            // 鍵盤メッシュのワールド上の上面 (bounding box の max.y) を取得してラベル高さを合わせる
+            const bbox = new THREE.Box3().setFromObject(keyMesh);
+            const worldTopY = bbox.max.y !== -Infinity ? bbox.max.y : (note.isBlack ? 0.08 : 0.07);
+            // わずかな Z-Fighting回避のため少しだけ上げる
+            const worldPos = new THREE.Vector3(worldX, worldTopY + 0.001, worldZ);
+
+            // 親を keyMesh にしてローカル座標に変換（貼り付ける）
+            keyMesh.add(labelMesh);
+            // worldPos はワールド座標上の鍵盤上面近傍の位置を示すので、
+            // worldToLocal の変換結果をそのままローカル位置として使う。
+            // 親が回転していても worldToLocal が正しいローカル座標を返すため
+            // 手動で y を上書きしないことが重要。
+            const localPos = keyMesh.worldToLocal(worldPos.clone());
+            labelMesh.position.copy(localPos);
+            // 子オブジェクトは親に合わせた向きになる（ローカル回転0でOK）
+            // メッシュ自体は回転させず、テクスチャ回転で向きを調整しているためローカル回転は0にする
+            labelMesh.rotation.set(0, 0, 0);
+            labelMesh.scale.set(1, 1, 1);
+
+            // 保存しておく（後で掃除や参照のため）。userData にはローカル座標の y を保存して
+            // 鍵盤移動（踏み込み）時にラベルが正しく追従するようにする。
+            labelMesh.userData.labelOffset = localPos.y;
+            labels.push(labelMesh);
         });
 
         pianoKeysRef.current = keys;
@@ -735,7 +766,7 @@ const LidarVisualizer = () => {
                             const distance = transformedDistances[i];
 
                             positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
-                            positions[i * 3 + 1] = 0.1; // 鍵盤より上に配置
+                            positions[i * 3 + 1] = pointHeightRef.current; // 鍵盤より上に配置
                             positions[i * 3 + 2] = Math.sin(angle) * distance;
 
                             // ドーナツ領域判定
@@ -843,12 +874,6 @@ const LidarVisualizer = () => {
                             if (pianoEdgesRef.current[index]) {
                                 pianoEdgesRef.current[index].position.y = pressedEdgeY;
                             }
-                            // ラベルも鍵盤に追従して下に移動
-                            if (pianoLabelsRef.current[index]) {
-                                const defaultLabelY = note.isBlack ? 0.08 : 0.07;
-                                const labelOffset = defaultLabelY - defaultY; // ラベルと鍵盤の相対オフセット
-                                pianoLabelsRef.current[index].position.y = pressedY + labelOffset;
-                            }
                         } else {
                             // デフォルトの状態に戻す
                             if (note.isBlack) {
@@ -864,11 +889,16 @@ const LidarVisualizer = () => {
                             if (pianoEdgesRef.current[index]) {
                                 pianoEdgesRef.current[index].position.y = defaultEdgeY;
                             }
-                            // ラベルも元の位置に戻す
-                            if (pianoLabelsRef.current[index]) {
-                                const defaultLabelY = note.isBlack ? 0.08 : 0.07;
-                                pianoLabelsRef.current[index].position.y = defaultLabelY;
-                            }
+                        }
+
+                        // ラベルが存在する場合、ローカルオフセットを維持して鍵盤に貼り付ける
+                        if (pianoLabelsRef.current[index]) {
+                            const label = pianoLabelsRef.current[index];
+                            const labelOffset = (label.userData && typeof label.userData.labelOffset === 'number')
+                                ? label.userData.labelOffset
+                                : (note.isBlack ? 0.08 - defaultY : 0.07 - defaultY);
+                            // 子要素のローカルYをラベルオフセットに固定
+                            label.position.y = labelOffset;
                         }
                     });
 
@@ -1043,7 +1073,8 @@ const LidarVisualizer = () => {
 
         for (let i = 0; i < 360; i++) {
             positions[i * 3] = 0.0;
-            positions[i * 3 + 1] = 0.0;
+            // 初期Yは pointHeightRef を使って鍵盤の文字より上に表示
+            positions[i * 3 + 1] = pointHeightRef.current;
             positions[i * 3 + 2] = 0.0;
 
             colors[i * 3] = 1.0;
@@ -1074,25 +1105,13 @@ const LidarVisualizer = () => {
             ctx.fillStyle = 'rgba(255,255,255,1.0)';
             ctx.fill();
 
-            const tex = new THREE.CanvasTexture(canvas);
-            tex.minFilter = THREE.LinearFilter;
-            tex.magFilter = THREE.LinearFilter;
-            tex.needsUpdate = true;
-            return tex;
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter;
+            texture.magFilter = THREE.LinearFilter;
+            texture.needsUpdate = true;
+
+            return texture;
         };
-
-        const coreTexture = createCoreTexture(64);
-
-        // コア（中心）マテリアル: シャープな見た目
-        const coreMaterial = new THREE.PointsMaterial({
-            size: 0.04,
-            map: coreTexture,
-            vertexColors: true,
-            sizeAttenuation: true,
-            transparent: true,
-            depthWrite: false,
-            alphaTest: 0.01,
-        });
 
         // 各点の外周に白い輪郭（Outline）を付けるためのテクスチャを生成
         const createOutlineTexture = (size = 128) => {
@@ -1136,6 +1155,19 @@ const LidarVisualizer = () => {
         const pointsOutline = new THREE.Points(geometry, outlineMaterial);
         scene.add(pointsOutline);
 
+        // コア用テクスチャとマテリアルを作成
+        const coreTexture = createCoreTexture(64);
+        const coreMaterial = new THREE.PointsMaterial({
+            size: 0.04,
+            map: coreTexture,
+            vertexColors: true,
+            sizeAttenuation: true,
+            transparent: true,
+            depthWrite: false,
+            alphaTest: 0.01,
+        });
+
+        // まず輪郭を描画（背景）、その上にコアを重ねる
         const pointsCore = new THREE.Points(geometry, coreMaterial);
         scene.add(pointsCore);
         pointsRef.current = pointsCore;
