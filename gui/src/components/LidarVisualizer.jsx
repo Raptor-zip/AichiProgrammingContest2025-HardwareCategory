@@ -14,8 +14,8 @@ function nowMs() {
 const PIANO_CONFIG = {
     innerRadius: 1.0,      // 内径 (m)
     outerRadius: 1.3,      // 外径 (m)
-    startAngle: 50,        // 開始角度 (度) min:-90
-    endAngle: 270,         // 終了角度 (度) max:270
+    startAngle: 120,        // 開始角度 (度) min:-90
+    endAngle: 240,         // 終了角度 (度) max:270
 };
 
 // ピアノ音階定義 (純正律 - 整数比)
@@ -27,7 +27,7 @@ const PIANO_RANGE = {
     startNote: 'C',    // 開始音名（オクターブ番号なし）
     startOctave: 3,    // 開始オクターブ
     endNote: 'B',      // 終了音名（オクターブ番号なし）
-    endOctave: 4,      // 終了オクターブ
+    endOctave: 3,      // 終了オクターブ
     rangeShift: 0,     // 音域シフト (-2〜+2 オクターブ)
 };
 
@@ -528,7 +528,7 @@ const LidarVisualizer = () => {
             console.log('PianoSynth initialized');
         }
 
-        const h = window.location.hostname || '192.168.4.1';
+        const h = "esp32.local";
         const url = `ws://${h}:81/`;
 
         // WebSocket切断時の共通処理
