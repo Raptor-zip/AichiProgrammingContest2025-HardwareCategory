@@ -1,89 +1,15 @@
+// @ts-nocheck
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
-// 高精度タイムスタンプを返す
-function nowMs() {
-    if (window.performance && typeof performance.now === 'function' && typeof performance.timeOrigin === 'number') {
-        return performance.timeOrigin + performance.now();
-    }
-    return Date.now();
-}
+// 型定義のインポート
+import type { Note } from '../types/lidar';
 
-// ピアノ設定
-const PIANO_CONFIG = {
-    innerRadius: 1.0,      // 内径 (m)
-    outerRadius: 1.3,      // 外径 (m)
-    startAngle: 120,        // 開始角度 (度) min:-90
-    endAngle: 240,         // 終了角度 (度) max:270
-};
-
-// ピアノ音階定義 (純正律 - 整数比)
-// C4 = 264 Hz (基準音を調整してキリの良い数値に)
-const BASE_FREQ = 264; // C4
-
-// 音域設定
-const PIANO_RANGE = {
-    startNote: 'C',    // 開始音名（オクターブ番号なし）
-    startOctave: 3,    // 開始オクターブ
-    endNote: 'B',      // 終了音名（オクターブ番号なし）
-    endOctave: 3,      // 終了オクターブ
-    rangeShift: 0,     // 音域シフト (-2〜+2 オクターブ)
-};
-
-// 基本音階定義（C4基準、1オクターブ分）
-const BASE_NOTES = [
-    { note: 'C', ratio: 1, name: 'ド', isBlack: false },  // 1/1
-    { note: 'C#', ratio: 16 / 15, name: 'ド#', isBlack: true },   // 16/15
-    { note: 'D', ratio: 9 / 8, name: 'レ', isBlack: false },  // 9/8
-    { note: 'D#', ratio: 6 / 5, name: 'レ#', isBlack: true },   // 6/5
-    { note: 'E', ratio: 5 / 4, name: 'ミ', isBlack: false },  // 5/4
-    { note: 'F', ratio: 4 / 3, name: 'フ', isBlack: false },  // 4/3
-    { note: 'F#', ratio: 45 / 32, name: 'フ#', isBlack: true },   // 45/32
-    { note: 'G', ratio: 3 / 2, name: 'ソ', isBlack: false },  // 3/2
-    { note: 'G#', ratio: 8 / 5, name: 'ソ#', isBlack: true },   // 8/5
-    { note: 'A', ratio: 5 / 3, name: 'ラ', isBlack: false },  // 5/3
-    { note: 'A#', ratio: 16 / 9, name: 'ラ#', isBlack: true },   // 16/9
-    { note: 'B', ratio: 15 / 8, name: 'シ', isBlack: false },  // 15/8
-];
-
-// 音階範囲を生成する関数
-function generatePianoNotes(startNote, startOctave, endNote, endOctave, rangeShift = 0) {
-    const notes = [];
-    const startIdx = BASE_NOTES.findIndex(n => n.note === startNote);
-    const endIdx = BASE_NOTES.findIndex(n => n.note === endNote);
-
-    if (startIdx === -1 || endIdx === -1) {
-        console.error('Invalid note names');
-        return notes;
-    }
-
-    // シフトを適用
-    const shiftedStartOctave = startOctave + rangeShift;
-    const shiftedEndOctave = endOctave + rangeShift;
-
-    // 開始オクターブから終了オクターブまで生成
-    for (let octave = shiftedStartOctave; octave <= shiftedEndOctave; octave++) {
-        const octaveDiff = octave - 4; // C4を基準とした差分
-        const octaveMultiplier = Math.pow(2, octaveDiff);
-
-        for (let i = 0; i < BASE_NOTES.length; i++) {
-            // 範囲チェック
-            if (octave === shiftedStartOctave && i < startIdx) continue;
-            if (octave === shiftedEndOctave && i > endIdx) break;
-
-            const baseNote = BASE_NOTES[i];
-            notes.push({
-                note: `${baseNote.note}${octave}`,
-                freq: BASE_FREQ * baseNote.ratio * octaveMultiplier,
-                name: baseNote.name,
-                isBlack: baseNote.isBlack,
-            });
-        }
-    }
-
-    return notes;
-}
+// ユーティリティのインポート
+import { PIANO_CONFIG, PIANO_RANGE } from '../utils/constants';
+import { generatePianoNotes, nowMs } from '../utils/piano';
+import { PianoSynth } from '../utils/PianoSynth';
 
 // 初期音階を生成
 let PIANO_NOTES = generatePianoNotes(
@@ -94,121 +20,27 @@ let PIANO_NOTES = generatePianoNotes(
     PIANO_RANGE.rangeShift
 );
 
-// Web Audio API用の音声生成
-class PianoSynth {
-    constructor() {
-        this.audioContext = null;
-        this.oscillators = new Map();
-        this.gainNodes = new Map();
-        this.waveType = 'sawtooth'; // デフォルトはノコギリ波
-        this.decayEnabled = true; // 減衰機能のON/OFF（デフォルト: ON）
-        this.decayTime = 2.0; // 減衰時間（秒）
-        this.noteStartTimes = new Map(); // 各音の開始時刻
-    }
-
-    init() {
-        if (!this.audioContext) {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        }
-    }
-
-    setWaveType(type) {
-        this.waveType = type;
-    }
-
-    setDecayEnabled(enabled) {
-        this.decayEnabled = enabled;
-    }
-
-    updateDecay() {
-        // 減衰機能が有効な場合、各音の音量を時間経過に応じて減少
-        if (!this.decayEnabled || !this.audioContext) return;
-
-        const currentTime = this.audioContext.currentTime;
-        for (const [noteName, gainNode] of this.gainNodes.entries()) {
-            const startTime = this.noteStartTimes.get(noteName);
-            if (startTime) {
-                const elapsed = currentTime - startTime;
-                if (elapsed < this.decayTime) {
-                    // 指数関数的に減衰（0.3から0.05まで）
-                    const decay = 0.3 * Math.exp(-3 * elapsed / this.decayTime) + 0.05;
-                    gainNode.gain.setValueAtTime(decay, currentTime);
-                } else {
-                    // 減衰時間を超えたら最小音量に
-                    gainNode.gain.setValueAtTime(0.05, currentTime);
-                }
-            }
-        }
-    }
-
-    playNote(freq, noteName) {
-        this.init();
-
-        // 既に鳴っている場合は何もしない（連打防止）
-        if (this.oscillators.has(noteName)) {
-            return;
-        }
-
-        const oscillator = this.audioContext.createOscillator();
-        const gainNode = this.audioContext.createGain();
-
-        oscillator.type = this.waveType; // 設定された波形を使用
-        oscillator.frequency.setValueAtTime(freq, this.audioContext.currentTime);
-
-        gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
-        gainNode.gain.linearRampToValueAtTime(0.3, this.audioContext.currentTime + 0.01);
-
-        oscillator.connect(gainNode);
-        gainNode.connect(this.audioContext.destination);
-
-        oscillator.start();
-
-        this.oscillators.set(noteName, oscillator);
-        this.gainNodes.set(noteName, gainNode);
-        this.noteStartTimes.set(noteName, this.audioContext.currentTime);
-    }
-
-    stopNote(noteName) {
-        const oscillator = this.oscillators.get(noteName);
-        const gainNode = this.gainNodes.get(noteName);
-
-        if (oscillator && gainNode) {
-            gainNode.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + 0.1);
-            oscillator.stop(this.audioContext.currentTime + 0.1);
-            this.oscillators.delete(noteName);
-            this.gainNodes.delete(noteName);
-            this.noteStartTimes.delete(noteName);
-        }
-    }
-
-    stopAll() {
-        for (const noteName of this.oscillators.keys()) {
-            this.stopNote(noteName);
-        }
-    }
-}
-
 const LidarVisualizer = () => {
-    const containerRef = useRef(null);
-    const sceneRef = useRef(null);
-    const rendererRef = useRef(null);
-    const pointsRef = useRef(null);
-    const animationIdRef = useRef(null);
-    const wsRef = useRef(null);
-    const pingTimerRef = useRef(null);
-    const pingTimeoutRef = useRef(null); // Pingタイムアウト監視用
-    const dataTimeoutRef = useRef(null); // データフレームタイムアウト監視用
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const sceneRef = useRef<THREE.Scene | null>(null);
+    const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+    const pointsRef = useRef<THREE.Points | null>(null);
+    const animationIdRef = useRef<number | null>(null);
+    const wsRef = useRef<WebSocket | null>(null);
+    const pingTimerRef = useRef<number | null>(null);
+    const pingTimeoutRef = useRef<number | null>(null); // Pingタイムアウト監視用
+    const dataTimeoutRef = useRef<number | null>(null); // データフレームタイムアウト監視用
     const lastDataReceivedRef = useRef(Date.now()); // 最後にデータを受信した時刻
     const pingSeqRef = useRef(0);
-    const pingHistoryRef = useRef([]); // Ping履歴（直近30秒分） { timestamp: number, rtt: number }[]
-    const synthRef = useRef(null);
-    const pianoKeysRef = useRef([]); // ピアノ鍵盤のメッシュ配列
-    const pianoEdgesRef = useRef([]); // ピアノ鍵盤の境界線配列
-    const pianoLabelsRef = useRef([]); // ピアノ鍵盤の音名ラベル配列
-    const centerTextRef = useRef(null); // 円の中心の演奏中テキスト
-    const activeNotesRef = useRef(new Set()); // 現在鳴っている音
+    const pingHistoryRef = useRef<Array<{ timestamp: number; rtt: number }>>([]); // Ping履歴（直近30秒分）
+    const synthRef = useRef<PianoSynth | null>(null);
+    const pianoKeysRef = useRef<THREE.Mesh[]>([]); // ピアノ鍵盤のメッシュ配列
+    const pianoEdgesRef = useRef<THREE.LineSegments[]>([]); // ピアノ鍵盤の境界線配列
+    const pianoLabelsRef = useRef<THREE.Mesh[]>([]); // ピアノ鍵盤の音名ラベル配列
+    const centerTextRef = useRef<THREE.Sprite | null>(null); // 円の中心の演奏中テキスト
+    const activeNotesRef = useRef(new Set<string>()); // 現在鳴っている音
     const rangeShiftRef = useRef(PIANO_RANGE.rangeShift); // 音域シフトの現在値（ref版）
-    const pianoNotesRef = useRef(PIANO_NOTES); // 現在の音階配列（ref版）
+    const pianoNotesRef = useRef<Note[]>(PIANO_NOTES); // 現在の音階配列（ref版）
     // 可変パラメータ用のrefs
     const innerRadiusRef = useRef(PIANO_CONFIG.innerRadius);
     const outerRadiusRef = useRef(PIANO_CONFIG.outerRadius);
@@ -216,17 +48,18 @@ const LidarVisualizer = () => {
     const pointHeightRef = useRef(0.1);
     // WebSocket再接続用
     const reconnectAttemptsRef = useRef(0); // 再接続試行回数
-    const reconnectTimerRef = useRef(null); // 再接続タイマー
-    const connectionCheckTimerRef = useRef(null); // 接続状態チェックタイマー
+    const reconnectTimerRef = useRef<number | null>(null); // 再接続タイマー
+    const connectionCheckTimerRef = useRef<number | null>(null); // 接続状態チェックタイマー
     const maxReconnectAttempts = 5; // 最大再接続試行回数（5回失敗したらリロード）
     const dataTimeoutDuration = 5000; // データ受信タイムアウト (5秒)
 
     // 円の中心のテキストを更新する関数
-    const updateCenterText = (notes) => {
+    const updateCenterText = (notes: Note[]) => {
         if (!centerTextRef.current) return;
 
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
+        if (!context) return;
         canvas.width = 1024;
         canvas.height = 512;
 
@@ -253,25 +86,26 @@ const LidarVisualizer = () => {
 
         // テクスチャを更新
         const texture = new THREE.CanvasTexture(canvas);
-        centerTextRef.current.material.map = texture;
-        centerTextRef.current.material.needsUpdate = true;
+        if (centerTextRef.current.material instanceof THREE.SpriteMaterial) {
+            centerTextRef.current.material.map = texture;
+            centerTextRef.current.material.needsUpdate = true;
+        }
     };
 
-    const [wsStatus, setWsStatus] = useState('disconnected');
-    const [frameCount, setFrameCount] = useState(0);
-    const [fps, setFps] = useState(0);
-    const [lastTimestamp, setLastTimestamp] = useState(0);
-    const [pingEnabled, setPingEnabled] = useState(false);
-    const [pingStats, setPingStats] = useState({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
-    const [lastRTT, setLastRTT] = useState(0);
-    const [currentNotes, setCurrentNotes] = useState([]); // 現在踏んでいる音
-    const [audioEnabled, setAudioEnabled] = useState(false); // オーディオ有効化状態
-    const [rangeShift, setRangeShift] = useState(PIANO_RANGE.rangeShift); // 音域シフト (-2 ~ +2)
-    const [waveType, setWaveType] = useState('sawtooth'); // 波形タイプ（デフォルト: ノコギリ波）
-    const [decayEnabled, setDecayEnabled] = useState(true); // 音の減衰ON/OFF（デフォルト: ON）
-    const [flipHorizontal, setFlipHorizontal] = useState(false); // 左右反転
-    const [flipVertical, setFlipVertical] = useState(false); // 上下反転
-    const [rotate180, setRotate180] = useState(false); // 180度回転
+    const [wsStatus, setWsStatus] = useState<string>('disconnected');
+    const [frameCount, setFrameCount] = useState<number>(0);
+    const [fps, setFps] = useState<number>(0);
+    const [lastTimestamp, setLastTimestamp] = useState<number>(0);
+    const [pingStats, setPingStats] = useState<{ min: number; max: number; avg: number; count: number }>({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
+    const [lastRTT, setLastRTT] = useState<number>(0);
+    const [currentNotes, setCurrentNotes] = useState<Note[]>([]); // 現在踏んでいる音
+    const [audioEnabled, setAudioEnabled] = useState<boolean>(false); // オーディオ有効化状態
+    const [rangeShift, setRangeShift] = useState<number>(PIANO_RANGE.rangeShift); // 音域シフト (-2 ~ +2)
+    const [waveType, setWaveType] = useState<OscillatorType>('sawtooth'); // 波形タイプ（デフォルト: ノコギリ波）
+    const [decayEnabled, setDecayEnabled] = useState<boolean>(true); // 音の減衰ON/OFF（デフォルト: ON）
+    const [flipHorizontal, setFlipHorizontal] = useState<boolean>(false); // 左右反転
+    const [flipVertical, setFlipVertical] = useState<boolean>(false); // 上下反転
+    const [rotate180, setRotate180] = useState<boolean>(false); // 180度回転
     // 可変な音検出レンジ（UIで変更可能にする）
     const [innerRadius, setInnerRadius] = useState(PIANO_CONFIG.innerRadius);
     const [outerRadius, setOuterRadius] = useState(PIANO_CONFIG.outerRadius);
@@ -303,9 +137,9 @@ const LidarVisualizer = () => {
         const angleRange = endAngle - startAngle;
         const currentNotes = pianoNotesRef.current;
         const degreesPerKey = angleRange / currentNotes.length;
-        const keys = [];
-        const edges = [];
-        const labels = [];
+        const keys: THREE.Mesh[] = [];
+        const edges: THREE.LineSegments[] = [];
+        const labels: THREE.Mesh[] = [];
 
         currentNotes.forEach((note, index) => {
             const startDeg = startAngle + (index * degreesPerKey);
@@ -384,24 +218,26 @@ const LidarVisualizer = () => {
             canvas.width = 512;
             canvas.height = 256;
 
-            context.textAlign = 'center';
-            context.textBaseline = 'middle';
-            context.font = 'bold 120px Arial';
+            if (context) {
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                context.font = 'bold 120px Arial';
 
-            // 影を追加
-            context.shadowColor = 'rgba(0, 0, 0, 0.8)';
-            context.shadowBlur = 10;
-            context.shadowOffsetX = 4;
-            context.shadowOffsetY = 4;
+                // 影を追加
+                context.shadowColor = 'rgba(0, 0, 0, 0.8)';
+                context.shadowBlur = 10;
+                context.shadowOffsetX = 4;
+                context.shadowOffsetY = 4;
 
-            // 縁（ストローク）を追加
-            context.strokeStyle = note.isBlack ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.9)';
-            context.lineWidth = 20;
-            context.strokeText(note.note, 256, 128);
+                // 縁（ストローク）を追加
+                context.strokeStyle = note.isBlack ? 'rgba(0, 0, 0, 0.9)' : 'rgba(255, 255, 255, 0.9)';
+                context.lineWidth = 20;
+                context.strokeText(note.note, 256, 128);
 
-            // テキスト本体
-            context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.9)';
-            context.fillText(note.note, 256, 128);
+                // テキスト本体
+                context.fillStyle = note.isBlack ? 'rgba(255, 255, 255, 0.95)' : 'rgba(0, 0, 0, 0.9)';
+                context.fillText(note.note, 256, 128);
+            }
 
             const texture = new THREE.CanvasTexture(canvas);
             texture.minFilter = THREE.LinearFilter;
@@ -447,7 +283,7 @@ const LidarVisualizer = () => {
 
             // 保存しておく（後で掃除や参照のため）。userData にはローカル座標の y を保存して
             // 鍵盤移動（踏み込み）時にラベルが正しく追従するようにする。
-            labelMesh.userData.labelOffset = localPos.y;
+            labelMesh.userData = { labelOffset: localPos.y };
             labels.push(labelMesh);
         });
 
@@ -545,11 +381,9 @@ const LidarVisualizer = () => {
 
     // 画面クリックでオーディオコンテキストを開始
     const enableAudio = () => {
-        if (synthRef.current && synthRef.current.audioContext) {
-            synthRef.current.audioContext.resume().then(() => {
-                console.log('AudioContext resumed');
-                setAudioEnabled(true);
-            });
+        if (synthRef.current) {
+            synthRef.current.init();
+            setAudioEnabled(true);
         }
     };
 
@@ -586,7 +420,7 @@ const LidarVisualizer = () => {
         };
 
         // WebSocket強制切断（再接続トリガー）
-        const forceReconnect = (reason) => {
+        const forceReconnect = (reason: string) => {
             console.warn(`${reason}. Forcing reconnection...`);
 
             // すべての音を停止
@@ -669,8 +503,6 @@ const LidarVisualizer = () => {
                         }
                     }
                 }, 3000); // 3秒ごとにチェック
-
-                setPingEnabled(true);
             };
 
             ws.onclose = (e) => {
@@ -767,7 +599,7 @@ const LidarVisualizer = () => {
                         const currentPianoNotes = pianoNotesRef.current;
                         const angleRange = endAngle - startAngle;
                         const degreesPerKey = currentPianoNotes.length > 0 ? angleRange / currentPianoNotes.length : 360;
-                        const labelWorldYs = [];
+                        const labelWorldYs: number[] = [];
                         const _tmpVec = new THREE.Vector3();
                         if (pianoLabelsRef.current && pianoLabelsRef.current.length > 0) {
                             pianoLabelsRef.current.forEach((lbl, idx) => {
@@ -826,7 +658,7 @@ const LidarVisualizer = () => {
                     }
 
                     // ピアノ鍵盤の足検出
-                    const detectedNotes = [];
+                    const detectedNotes: Note[] = [];
                     const startAngle = PIANO_CONFIG.startAngle;
                     const endAngle = PIANO_CONFIG.endAngle;
                     const innerR = innerRadiusRef.current;
@@ -899,8 +731,9 @@ const LidarVisualizer = () => {
 
                         if (isActive) {
                             // 押されている状態
-                            keyMesh.material.color.setHex(0xffff00); // 黄色（踏まれている）
-                            keyMesh.material.emissive.setHex(0xff8800);
+                            const mat = keyMesh.material as THREE.MeshStandardMaterial;
+                            mat.color.setHex(0xffff00); // 黄色（踏まれている）
+                            mat.emissive.setHex(0xff8800);
                             keyMesh.position.y = pressedY; // 下に移動
 
                             // 境界線も下に移動
@@ -909,12 +742,13 @@ const LidarVisualizer = () => {
                             }
                         } else {
                             // デフォルトの状態に戻す
+                            const mat = keyMesh.material as THREE.MeshStandardMaterial;
                             if (note.isBlack) {
-                                keyMesh.material.color.setHex(0x333333);
-                                keyMesh.material.emissive.setHex(0x000000);
+                                mat.color.setHex(0x333333);
+                                mat.emissive.setHex(0x000000);
                             } else {
-                                keyMesh.material.color.setHex(0xffffff);
-                                keyMesh.material.emissive.setHex(0x000000);
+                                mat.color.setHex(0xffffff);
+                                mat.emissive.setHex(0x000000);
                             }
                             keyMesh.position.y = defaultY; // 元の位置に戻す
 
@@ -1079,6 +913,7 @@ const LidarVisualizer = () => {
         // 円の中心に演奏中の音を表示するテキストスプライト
         const centerCanvas = document.createElement('canvas');
         const centerContext = centerCanvas.getContext('2d');
+        if (!centerContext) return;
         centerCanvas.width = 1024;
         centerCanvas.height = 512;
 
@@ -1126,6 +961,7 @@ const LidarVisualizer = () => {
             const canvas = document.createElement('canvas');
             canvas.width = canvas.height = size;
             const ctx = canvas.getContext('2d');
+            if (!ctx) return new THREE.CanvasTexture(canvas);
 
             const cx = size / 2;
             const cy = size / 2;
@@ -1151,6 +987,7 @@ const LidarVisualizer = () => {
             const canvas = document.createElement('canvas');
             canvas.width = canvas.height = size;
             const ctx = canvas.getContext('2d');
+            if (!ctx) return new THREE.CanvasTexture(canvas);
 
             const cx = size / 2;
             const cy = size / 2;
@@ -1517,7 +1354,7 @@ const LidarVisualizer = () => {
                         🎵 波形タイプ
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
-                        {['sine', 'triangle', 'sawtooth', 'square'].map(type => (
+                        {(['sine', 'triangle', 'sawtooth', 'square'] as OscillatorType[]).map(type => (
                             <button
                                 key={type}
                                 onClick={(e) => {
@@ -1577,7 +1414,7 @@ const LidarVisualizer = () => {
                             width: '100%'
                         }}
                     >
-                        {decayEnabled ? '✅ ON (時間経過で減衰)' : '❌ OFF (一定音量)'}
+                        {decayEnabled ? 'ON' : 'OFF'}
                     </button>
                 </div>
 
