@@ -758,12 +758,28 @@ const LidarVisualizer = () => {
                             positions[i * 3 + 1] = yPos;
                             positions[i * 3 + 2] = Math.sin(angle) * distance;
 
-                            // カラーは従来通りドーナツ判定で分ける
-                            if (isInDonutAngle && isInDonutRadius) {
+                            // カラーはドーナツ判定＋鍵盤境界除外割合を考慮して分ける
+                            const boundaryMarginRatio = boundaryMarginRatioRef.current || 0;
+                            let highlight = false;
+                            if (isInDonutAngle && isInDonutRadius && degreesPerKey > 0) {
+                                const relativeAngle = angleDeg - startAngle;
+                                const keyIndex = Math.floor(relativeAngle / degreesPerKey);
+                                if (keyIndex >= 0 && keyIndex < currentPianoNotes.length) {
+                                    const positionInKey = (relativeAngle - keyIndex * degreesPerKey) / degreesPerKey;
+                                    const margin = boundaryMarginRatio / 2;
+                                    if (positionInKey >= margin && positionInKey <= (1.0 - margin)) {
+                                        highlight = true;
+                                    }
+                                }
+                            }
+
+                            if (highlight) {
+                                // 有効領域の点のみ青く強調
                                 colors[i * 3] = 0.0;
                                 colors[i * 3 + 1] = 0.0;
                                 colors[i * 3 + 2] = 1.0;
                             } else {
+                                // それ以外は目立たせないグレー
                                 colors[i * 3] = 0.3;
                                 colors[i * 3 + 1] = 0.3;
                                 colors[i * 3 + 2] = 0.3;
@@ -1436,10 +1452,6 @@ const LidarVisualizer = () => {
                         }}
                     />
                 </div>
-                <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
-                    鍵盤数: {PIANO_NOTES.length}
-                </div>
-                <div>演奏中: {currentNotes.length} 音</div>
 
                 {/* 音域シフト */}
                 <div style={{
