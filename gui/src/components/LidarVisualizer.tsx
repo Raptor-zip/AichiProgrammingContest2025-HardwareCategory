@@ -100,6 +100,8 @@ const LidarVisualizer = () => {
     const [lastTimestamp, setLastTimestamp] = useState<number>(0);
     const [pingStats, setPingStats] = useState<{ min: number; max: number; avg: number; count: number }>({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
     const [lastRTT, setLastRTT] = useState<number>(0);
+    // LiDAR 反射強度フィルタ閾値（0-255）
+    const [reflectionThreshold, setReflectionThreshold] = useState<number>(50);
     const [currentNotes, setCurrentNotes] = useState<Note[]>([]); // 現在踏んでいる音
     const [audioEnabled, setAudioEnabled] = useState<boolean>(false); // オーディオ有効化状態
     const [rangeShift, setRangeShift] = useState<number>(PIANO_RANGE.rangeShift); // 音域シフト (-2 ~ +2)
@@ -703,6 +705,9 @@ const LidarVisualizer = () => {
                         transformedDistances[i] = distances[transformedIndex];
                     }
 
+                    // 検出用の Map を作って、ループ内で位置/色更新と検出を同時に行う
+                    const detectedMap: Map<string, Note> = new Map();
+
                     // 点群を更新
                     if (pointsRef.current) {
                         const positions = pointsRef.current.geometry.attributes.position.array;
@@ -730,27 +735,45 @@ const LidarVisualizer = () => {
                             });
                         }
 
+                        const boundaryMarginRatio = boundaryMarginRatioRef.current || 0;
+
                         for (let i = 0; i < 360; i++) {
                             const angle = (i * Math.PI) / 180.0;
                             const distance = transformedDistances[i];
 
+                            // X
                             positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
 
                             // デフォルトのY位置
                             let yPos = pointHeightRef.current;
 
-                            // この点が鍵盤ドーナツ領域上にあるかをチェックし、該当鍵があれば鍵盤（ラベル）上面より上に出す
+                            // この点が鍵盤ドーナツ領域上にあるかをチェック
                             const angleDeg = i - 90;
                             const isInDonutAngle = angleDeg >= startAngle && angleDeg <= endAngle;
                             const isInDonutRadius = distance >= innerR && distance <= outerR;
+
                             if (isInDonutAngle && isInDonutRadius && degreesPerKey > 0) {
                                 const relativeAngle = angleDeg - startAngle;
                                 const keyIndex = Math.floor(relativeAngle / degreesPerKey);
+                                // ラベル高さに合わせてYを持ち上げる（踏み込み追従）
                                 if (keyIndex >= 0 && keyIndex < labelWorldYs.length) {
                                     const labelWorldY = labelWorldYs[keyIndex];
                                     if (labelWorldY !== -Infinity) {
                                         // ラベルのワールドYより少し上にして表示（Z-fighting回避）
                                         yPos = Math.max(pointHeightRef.current, labelWorldY + 0.002);
+                                    }
+                                }
+
+                                // 検出判定（中央領域のみ有効）
+                                if (keyIndex >= 0 && keyIndex < currentPianoNotes.length) {
+                                    const positionInKey = (relativeAngle - keyIndex * degreesPerKey) / degreesPerKey;
+                                    const margin = boundaryMarginRatio / 2;
+                                    if (positionInKey >= margin && positionInKey <= (1.0 - margin)) {
+                                        // 検出候補として Map に格納（重複を防ぐ）
+                                        const note = currentPianoNotes[keyIndex];
+                                        if (note && !detectedMap.has(note.note)) {
+                                            detectedMap.set(note.note, note);
+                                        }
                                     }
                                 }
                             }
@@ -759,7 +782,6 @@ const LidarVisualizer = () => {
                             positions[i * 3 + 2] = Math.sin(angle) * distance;
 
                             // カラーはドーナツ判定＋鍵盤境界除外割合を考慮して分ける
-                            const boundaryMarginRatio = boundaryMarginRatioRef.current || 0;
                             let highlight = false;
                             if (isInDonutAngle && isInDonutRadius && degreesPerKey > 0) {
                                 const relativeAngle = angleDeg - startAngle;
@@ -786,49 +808,13 @@ const LidarVisualizer = () => {
                             }
                         }
 
+                        // 更新フラグはループ外で一度だけ立てる
                         pointsRef.current.geometry.attributes.position.needsUpdate = true;
                         pointsRef.current.geometry.attributes.color.needsUpdate = true;
                     }
 
-                    // ピアノ鍵盤の足検出
-                    const detectedNotes: Note[] = [];
-                    const startAngle = startAngleRef.current;
-                    const endAngle = endAngleRef.current;
-                    const innerR = innerRadiusRef.current;
-                    const outerR = outerRadiusRef.current;
-                    const currentPianoNotes = pianoNotesRef.current;
-                    const angleRange = endAngle - startAngle;
-                    const degreesPerKey = angleRange / currentPianoNotes.length;
-                    const boundaryMarginRatio = boundaryMarginRatioRef.current; // 鍵盤の境界割合（左右各 margin/2 を除外）
-
-                    for (let i = 0; i < 360; i++) {
-                        const angleDeg = i - 90; // LiDARの0度を前方に調整
-                        const distance = transformedDistances[i];
-
-                        // ピアノの角度範囲内かチェック
-                        if (angleDeg >= startAngle && angleDeg <= endAngle) {
-                            // 距離がピアノの範囲内かチェック
-                            if (distance >= innerR && distance <= outerR) {
-                                // どの鍵盤か判定
-                                const relativeAngle = angleDeg - startAngle;
-                                const keyIndex = Math.floor(relativeAngle / degreesPerKey);
-
-                                if (keyIndex >= 0 && keyIndex < currentPianoNotes.length) {
-                                    // 鍵盤内の相対位置を計算（0.0〜1.0）
-                                    const positionInKey = (relativeAngle - keyIndex * degreesPerKey) / degreesPerKey;
-
-                                    // 境界マージンを除外（中央80%のみ有効）
-                                    const margin = boundaryMarginRatio / 2;
-                                    if (positionInKey >= margin && positionInKey <= (1.0 - margin)) {
-                                        const note = currentPianoNotes[keyIndex];
-                                        if (!detectedNotes.find(n => n.note === note.note)) {
-                                            detectedNotes.push(note);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // ループ内で集めた detectedMap を配列に変換
+                    const detectedNotes: Note[] = Array.from(detectedMap.values());
 
                     // 音の再生・停止
                     if (synthRef.current) {
@@ -917,42 +903,55 @@ const LidarVisualizer = () => {
                 }
                 // テキストデータ(Ping)の処理
                 else if (typeof event.data === 'string') {
-                    try {
-                        const msg = JSON.parse(event.data);
-                        if (msg.type === 'ping') {
-                            // Pong応答を受信したので、タイムアウトタイマーをクリア
-                            if (pingTimeoutRef.current) {
-                                clearTimeout(pingTimeoutRef.current);
-                                pingTimeoutRef.current = null;
-                            }
-
-                            const now = nowMs();
-                            const rtt = now - msg.t;
-                            setLastRTT(rtt);
-
-                            // Ping履歴に追加（タイムスタンプ付き）
-                            pingHistoryRef.current.push({ timestamp: now, rtt });
-
-                            // 30秒より古いデータを削除
-                            const thirtySecondsAgo = now - 30000; // 30秒 = 30000ms
-                            pingHistoryRef.current = pingHistoryRef.current.filter(
-                                entry => entry.timestamp >= thirtySecondsAgo
-                            );
-
-                            // 直近30秒分の統計を計算
-                            if (pingHistoryRef.current.length > 0) {
-                                const rtts = pingHistoryRef.current.map(e => e.rtt);
-                                const min = Math.min(...rtts);
-                                const max = Math.max(...rtts);
-                                const sum = rtts.reduce((acc, val) => acc + val, 0);
-                                const avg = sum / rtts.length;
-                                const count = rtts.length;
-
-                                setPingStats({ min, max, avg, count });
+                    const s = event.data.trim();
+                    // サーバからの反射閾値確認応答 (例: "THR SET 80")
+                    if (s.startsWith('THR SET')) {
+                        const parts = s.split(/\s+/);
+                        if (parts.length >= 3) {
+                            const v = parseInt(parts[2], 10);
+                            if (!isNaN(v)) {
+                                setReflectionThreshold(v);
+                                console.log('Server confirmed THR SET', v);
                             }
                         }
-                    } catch (e) {
-                        console.warn('Invalid JSON from server', e);
+                    } else {
+                        try {
+                            const msg = JSON.parse(event.data);
+                            if (msg.type === 'ping') {
+                                // Pong応答を受信したので、タイムアウトタイマーをクリア
+                                if (pingTimeoutRef.current) {
+                                    clearTimeout(pingTimeoutRef.current);
+                                    pingTimeoutRef.current = null;
+                                }
+
+                                const now = nowMs();
+                                const rtt = now - msg.t;
+                                setLastRTT(rtt);
+
+                                // Ping履歴に追加（タイムスタンプ付き）
+                                pingHistoryRef.current.push({ timestamp: now, rtt });
+
+                                // 30秒より古いデータを削除
+                                const thirtySecondsAgo = now - 30000; // 30秒 = 30000ms
+                                pingHistoryRef.current = pingHistoryRef.current.filter(
+                                    entry => entry.timestamp >= thirtySecondsAgo
+                                );
+
+                                // 直近30秒分の統計を計算
+                                if (pingHistoryRef.current.length > 0) {
+                                    const rtts = pingHistoryRef.current.map(e => e.rtt);
+                                    const min = Math.min(...rtts);
+                                    const max = Math.max(...rtts);
+                                    const sum = rtts.reduce((acc, val) => acc + val, 0);
+                                    const avg = sum / rtts.length;
+                                    const count = rtts.length;
+
+                                    setPingStats({ min, max, avg, count });
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Invalid JSON from server', e);
+                        }
                     }
                 }
             };
@@ -1301,31 +1300,18 @@ const LidarVisualizer = () => {
 
             {/* 左上: LiDAR情報 */}
             <div
-                className="panel-left"
+                className="panel panel-left"
                 style={{
-                    position: 'absolute',
-                    top: 10,
-                    left: 10,
-                    color: 'white',
-                    background: 'rgba(0, 0, 0, 0.7)',
-                    padding: '10px',
-                    borderRadius: '5px',
-                    fontFamily: "'Noto Sans JP', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-                    fontSize: '14px'
+                    left: 10
                 }}
             >
-                <div style={{ fontSize: '16px', fontWeight: 'bold', marginBottom: '8px' }}>
-                    🎯 SonicRing
-                </div>
                 <div>WebSocket: <span style={{ color: wsStatus === 'connected' ? '#0f0' : '#f00' }}>{wsStatus}</span></div>
                 <div>Update Rate: {fps} Hz</div>
                 <div>Frame Count: {frameCount}</div>
                 <div>Timestamp: {lastTimestamp} ms</div>
 
                 <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '5px' }}>
-                        📡 WebSocket Ping
-                    </div>
+                    <h1>📡 WebSocket RTT</h1>
                     <div>RTT: {lastRTT.toFixed(2)} ms</div>
                     <div>Min: {pingStats.min === Infinity ? '-' : pingStats.min.toFixed(2)} ms</div>
                     <div>Max: {pingStats.max === -Infinity ? '-' : pingStats.max.toFixed(2)} ms</div>
@@ -1333,38 +1319,128 @@ const LidarVisualizer = () => {
                     <div>Count: {pingStats.count}</div>
                 </div>
 
-                <div style={{ marginTop: '10px', fontSize: '12px', opacity: 0.8 }}>
-                    Controls: Mouse to rotate, scroll to zoom
+
+                {/* 回転・反転コントロール */}
+                <div style={{
+                    marginTop: '12px',
+                    paddingTop: '12px',
+                    borderTop: '1px solid rgba(255,255,255,0.3)'
+                }}>
+                    <h1>🔄 回転・反転</h1>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const v = !flipHorizontal;
+                                setFlipHorizontal(v);
+                                flipHorizontalRef.current = v;
+                            }}
+                            style={{
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                background: flipHorizontal ? '#cc6600' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                opacity: flipHorizontal ? 1 : 0.7
+                            }}
+                        >
+                            ↔️ 左右反転 {flipHorizontal ? 'ON' : 'OFF'}
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const v = !flipVertical;
+                                setFlipVertical(v);
+                                flipVerticalRef.current = v;
+                            }}
+                            style={{
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                background: flipVertical ? '#cc6600' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                opacity: flipVertical ? 1 : 0.7
+                            }}
+                        >
+                            ↕️ 上下反転 {flipVertical ? 'ON' : 'OFF'}
+                        </button>
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const v = !rotate180;
+                                setRotate180(v);
+                                rotate180Ref.current = v;
+                            }}
+                            style={{
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                background: rotate180 ? '#cc6600' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                opacity: rotate180 ? 1 : 0.7
+                            }}
+                        >
+                            🔃 180°回転 {rotate180 ? 'ON' : 'OFF'}
+                        </button>
+                    </div>
+                </div>
+
+                {/* 反射強度閾値スライダー */}
+                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.12)' }}>
+                    <h1>⚙️ 反射強度フィルター</h1>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <input
+                            type="range"
+                            min={0}
+                            max={255}
+                            step={1}
+                            value={reflectionThreshold}
+                            onChange={(e) => {
+                                e.stopPropagation();
+                                const v = parseInt(e.target.value, 10);
+                                setReflectionThreshold(v);
+                                // 送信: WebSocket が開いていれば即反映させる
+                                try {
+                                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                        wsRef.current.send(`THR:${v}`);
+                                    } else {
+                                        console.warn('WebSocket not open - cannot send THR');
+                                    }
+                                } catch (err) {
+                                    console.warn('Failed to send THR over WebSocket', err);
+                                }
+                            }}
+                        />
+                        <div style={{ minWidth: '48px', textAlign: 'right', fontWeight: 'bold' }}>{reflectionThreshold}</div>
+                    </div>
                 </div>
 
                 <div style={{
                     marginTop: '10px',
-                    fontSize: '12px',
                     color: audioEnabled ? '#0f0' : '#ff0',
                     fontWeight: 'bold'
                 }}>
-                    🔊 Audio: {audioEnabled ? 'Enabled' : 'Click to enable'}
+                    🔊 音声: {audioEnabled ? '有効' : 'クリックして有効化'}
                 </div>
             </div>
 
             {/* 右上: ピアノ設定 */}
             <div
-                className="panel-right"
+                className="panel panel-right"
                 style={{
-                    position: 'absolute',
-                    top: 10,
                     right: 10,
-                    color: 'white',
-                    background: 'rgba(0, 0, 0, 0.7)',
-                    padding: '10px',
-                    borderRadius: '5px',
-                    fontFamily: "'Noto Sans JP', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-                    fontSize: '12px'
                 }}
             >
-                <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
-                    🎹 ピアノペダル設定
-                </div>
+                <h1>🎹 ピアノペダル設定</h1>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <div>内側半径: <strong>{innerRadius.toFixed(2)} m</strong></div>
                     <input
@@ -1459,9 +1535,7 @@ const LidarVisualizer = () => {
                     paddingTop: '12px',
                     borderTop: '1px solid rgba(255,255,255,0.3)'
                 }}>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
-                        🎹 音域シフト
-                    </div>
+                    <h1>🎹 音域シフト</h1>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                         <button
                             onClick={(e) => {
@@ -1536,9 +1610,7 @@ const LidarVisualizer = () => {
                     paddingTop: '12px',
                     borderTop: '1px solid rgba(255,255,255,0.3)'
                 }}>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
-                        🎵 波形タイプ
-                    </div>
+                    <h1>🎵 波形タイプ</h1>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
                         {(['sine', 'triangle', 'sawtooth', 'square'] as OscillatorType[]).map(type => (
                             <button
@@ -1580,104 +1652,19 @@ const LidarVisualizer = () => {
                     paddingTop: '12px',
                     borderTop: '1px solid rgba(255,255,255,0.3)'
                 }}>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
-                        📉 音の減衰
-                    </div>
+                    <h1>📉 音の減衰</h1>
                     <button
                         onClick={(e) => {
                             e.stopPropagation();
                             setDecayEnabled(!decayEnabled);
                         }}
                         style={{
-                            padding: '8px 16px',
-                            fontSize: '12px',
-                            fontWeight: 'bold',
+                            width: '100%',
                             background: decayEnabled ? '#00cc00' : '#666666',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '5px',
-                            cursor: 'pointer',
-                            width: '100%'
                         }}
                     >
                         {decayEnabled ? 'ON' : 'OFF'}
                     </button>
-                </div>
-
-                {/* 回転・反転コントロール */}
-                <div style={{
-                    marginTop: '12px',
-                    paddingTop: '12px',
-                    borderTop: '1px solid rgba(255,255,255,0.3)'
-                }}>
-                    <div style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '8px' }}>
-                        🔄 回転・反転
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const v = !flipHorizontal;
-                                setFlipHorizontal(v);
-                                flipHorizontalRef.current = v;
-                            }}
-                            style={{
-                                padding: '6px 10px',
-                                fontSize: '11px',
-                                fontWeight: 'bold',
-                                background: flipHorizontal ? '#cc6600' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                opacity: flipHorizontal ? 1 : 0.7
-                            }}
-                        >
-                            ↔️ 左右反転 {flipHorizontal ? 'ON' : 'OFF'}
-                        </button>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const v = !flipVertical;
-                                setFlipVertical(v);
-                                flipVerticalRef.current = v;
-                            }}
-                            style={{
-                                padding: '6px 10px',
-                                fontSize: '11px',
-                                fontWeight: 'bold',
-                                background: flipVertical ? '#cc6600' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                opacity: flipVertical ? 1 : 0.7
-                            }}
-                        >
-                            ↕️ 上下反転 {flipVertical ? 'ON' : 'OFF'}
-                        </button>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const v = !rotate180;
-                                setRotate180(v);
-                                rotate180Ref.current = v;
-                            }}
-                            style={{
-                                padding: '6px 10px',
-                                fontSize: '11px',
-                                fontWeight: 'bold',
-                                background: rotate180 ? '#cc6600' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                opacity: rotate180 ? 1 : 0.7
-                            }}
-                        >
-                            🔃 180°回転 {rotate180 ? 'ON' : 'OFF'}
-                        </button>
-                    </div>
                 </div>
             </div>
         </div>

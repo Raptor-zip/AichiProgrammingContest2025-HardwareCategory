@@ -10,8 +10,8 @@ import type { PianoConfig, PianoRange, BaseNote } from '../types/lidar';
  * ピアノ形状設定
  */
 export const PIANO_CONFIG: PianoConfig = {
-    innerRadius: 1.0,      // 内径 (m)
-    outerRadius: 1.3,      // 外径 (m)
+    innerRadius: 0.5,      // 内径 (m)
+    outerRadius: 0.8,      // 外径 (m)
     startAngle: 120,       // 開始角度 (度) min:-90
     endAngle: 240,         // 終了角度 (度) max:270
 };

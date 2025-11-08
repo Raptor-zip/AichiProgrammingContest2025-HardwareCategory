@@ -13,6 +13,9 @@
 const char *wifi_ssid = "raptor";
 const char *wifi_pass = "12345678";
 
+// const char *wifi_ssid = "SSID-C10A8E";
+// const char *wifi_pass = "h2W9ZKud";
+
 // 再接続設定
 #define WIFI_RECONNECT_INTERVAL 5000  // WiFi再接続試行間隔 (5秒)
 #define WIFI_MAX_RETRIES 10           // WiFi最大再接続試行回数
@@ -32,6 +35,10 @@ WebSocketsServer wsServer(81);
 #define LIDAR_DISTANCES ((float *)(lidarDataBuf + LIDAR_DATA_HEADER_SIZE))
 
 uint8_t lidarDataBuf[LIDAR_DATA_BUF_SIZE] = { 0 };
+
+// 反射強度フィルタ（0-255）: この値未満のconfidenceはフィルタされる
+#define DEFAULT_REFLECTION_THRESHOLD 50
+uint8_t reflectionThreshold = DEFAULT_REFLECTION_THRESHOLD;
 
 // LD06構造体
 LD06 ld06;
@@ -76,8 +83,27 @@ void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t lengt
     case WStype_TEXT:
       {
         // Pingメッセージをエコーバック
-        Serial.printf("[WS] recv from %u: %s\n", client_num, (char *)payload);
-        wsServer.sendTXT(client_num, payload, length);  // Pingエコー
+        // payload は NULL 終端されていない可能性があるので安全にコピーして扱う
+        char msg[128];
+        size_t copyLen = length < sizeof(msg)-1 ? length : sizeof(msg)-1;
+        memcpy(msg, payload, copyLen);
+        msg[copyLen] = '\0';
+        Serial.printf("[WS] recv from %u: %s\n", client_num, msg);
+
+        // コマンド: THR:<0-255> で反射閾値を更新
+        if ((strncmp(msg, "THR:", 4) == 0)) {
+          long v = strtol(msg + 4, NULL, 10);
+          if (v < 0) v = 0;
+          if (v > 255) v = 255;
+          reflectionThreshold = (uint8_t)v;
+          char resp[64];
+          snprintf(resp, sizeof(resp), "THR SET %u", reflectionThreshold);
+          wsServer.sendTXT(client_num, (const uint8_t *)resp, strlen(resp));
+          Serial.printf("[WS] reflectionThreshold updated to %u\n", reflectionThreshold);
+        } else {
+          // 通常はエコー
+          wsServer.sendTXT(client_num, payload, length);  // Pingエコー
+        }
         break;
       }
     default:
@@ -136,12 +162,13 @@ void loop() {
 
 void LD06_onReceived(LD06 *lidar) {
   static int16_t lastDegree = -1;
-
-  Serial.println("[LiDAR] Frame received");
+  static uint32_t _ld06_frame_counter = 0;
+  _ld06_frame_counter++;
 
   for (size_t i = 0; i < LD06_NUM_POINTS; i++) {
     float angle = lidar->angle[i];
     float distance = lidar->distance[i];
+    uint8_t confidence = lidar->confidence[i];
 
     int16_t degree = (int16_t)(angle / M_PI_F * 180.0f + 360.0f) % 360;
 
@@ -150,7 +177,12 @@ void LD06_onReceived(LD06 *lidar) {
       sendLidarData();
     }
 
-    LIDAR_DISTANCES[degree] = distance;
+    // 反射強度フィルタ: confidence が閾値未満ならフィルタ（ここでは 0.0f を格納）
+    if (confidence < reflectionThreshold) {
+      LIDAR_DISTANCES[degree] = 0.0f; // フィルタ済み（クライアント側で無視できるように 0 を送る）
+    } else {
+      LIDAR_DISTANCES[degree] = distance;
+    }
 
     lastDegree = degree;
   }
