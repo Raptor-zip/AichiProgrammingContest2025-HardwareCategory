@@ -32,6 +32,8 @@ const LidarVisualizer = () => {
     const pingTimerRef = useRef<number | null>(null);
     const pingTimeoutRef = useRef<number | null>(null); // Pingタイムアウト監視用
     const dataTimeoutRef = useRef<number | null>(null); // データフレームタイムアウト監視用
+    // 反射強度送信デバウンス用タイマー
+    const reflectionSendTimeoutRef = useRef<number | null>(null);
     const lastDataReceivedRef = useRef(Date.now()); // 最後にデータを受信した時刻
     const pingSeqRef = useRef(0);
     const pingHistoryRef = useRef<Array<{ timestamp: number; rtt: number }>>([]); // Ping履歴（直近30秒分）
@@ -58,6 +60,19 @@ const LidarVisualizer = () => {
     // 円の中心のテキストを更新する関数
     const updateCenterText = (notes: Note[]) => {
         if (!centerTextRef.current) return;
+
+        // Dispose previous texture to avoid GPU memory leak
+        try {
+            if (centerTextRef.current && centerTextRef.current.material instanceof THREE.SpriteMaterial) {
+                const oldMap = centerTextRef.current.material.map as THREE.Texture | null;
+                if (oldMap) {
+                    try { oldMap.dispose(); } catch (e) { /* ignore dispose errors */ }
+                    centerTextRef.current.material.map = null;
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to dispose previous center text texture', e);
+        }
 
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
@@ -960,7 +975,18 @@ const LidarVisualizer = () => {
         // 初回接続を開始
         connectWebSocket();
 
+        // initial connect
+        // (cleanup for this effect continues below)
+
         return () => {
+            // ensure any pending reflection send timeout is cleared on WS effect cleanup
+            try {
+                if (reflectionSendTimeoutRef.current) {
+                    clearTimeout(reflectionSendTimeoutRef.current);
+                    reflectionSendTimeoutRef.current = null;
+                }
+            } catch (e) { }
+
             console.log('Cleaning up WebSocket and timers');
 
             // 再接続タイマーをクリア
@@ -1305,110 +1331,113 @@ const LidarVisualizer = () => {
                     left: 10
                 }}
             >
+                <h1>🛰️ ESP32</h1>
                 <div>WebSocket: <span style={{ color: wsStatus === 'connected' ? '#0f0' : '#f00' }}>{wsStatus}</span></div>
-                <div>Update Rate: {fps} Hz</div>
-                <div>Frame Count: {frameCount}</div>
-                <div>Timestamp: {lastTimestamp} ms</div>
+                <div>更新周期: {fps} Hz</div>
+                <div>フレーム数: {frameCount}</div>
+                <div>タイムスタンプ: {lastTimestamp} ms</div>
 
-                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.3)' }}>
-                    <h1>📡 WebSocket RTT</h1>
-                    <div>RTT: {lastRTT.toFixed(2)} ms</div>
-                    <div>Min: {pingStats.min === Infinity ? '-' : pingStats.min.toFixed(2)} ms</div>
-                    <div>Max: {pingStats.max === -Infinity ? '-' : pingStats.max.toFixed(2)} ms</div>
-                    <div>Avg: {pingStats.count > 0 ? pingStats.avg.toFixed(2) : '-'} ms</div>
-                    <div>Count: {pingStats.count}</div>
-                </div>
+                <div className="divider" />
+                <h1>📡 WebSocket RTT</h1>
+                <div>RTT: {lastRTT.toFixed(2)} ms</div>
+                <div>最小: {pingStats.min === Infinity ? '-' : pingStats.min.toFixed(2)} ms</div>
+                <div>最大: {pingStats.max === -Infinity ? '-' : pingStats.max.toFixed(2)} ms</div>
+                <div>平均: {pingStats.count > 0 ? pingStats.avg.toFixed(2) : '-'} ms</div>
+                <div>カウント: {pingStats.count}</div>
 
 
                 {/* 回転・反転コントロール */}
-                <div style={{
-                    marginTop: '12px',
-                    paddingTop: '12px',
-                    borderTop: '1px solid rgba(255,255,255,0.3)'
-                }}>
-                    <h1>🔄 回転・反転</h1>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const v = !flipHorizontal;
-                                setFlipHorizontal(v);
-                                flipHorizontalRef.current = v;
-                            }}
-                            style={{
-                                padding: '6px 10px',
-                                fontSize: '11px',
-                                fontWeight: 'bold',
-                                background: flipHorizontal ? '#cc6600' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                opacity: flipHorizontal ? 1 : 0.7
-                            }}
-                        >
-                            ↔️ 左右反転 {flipHorizontal ? 'ON' : 'OFF'}
-                        </button>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const v = !flipVertical;
-                                setFlipVertical(v);
-                                flipVerticalRef.current = v;
-                            }}
-                            style={{
-                                padding: '6px 10px',
-                                fontSize: '11px',
-                                fontWeight: 'bold',
-                                background: flipVertical ? '#cc6600' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                opacity: flipVertical ? 1 : 0.7
-                            }}
-                        >
-                            ↕️ 上下反転 {flipVertical ? 'ON' : 'OFF'}
-                        </button>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                const v = !rotate180;
-                                setRotate180(v);
-                                rotate180Ref.current = v;
-                            }}
-                            style={{
-                                padding: '6px 10px',
-                                fontSize: '11px',
-                                fontWeight: 'bold',
-                                background: rotate180 ? '#cc6600' : '#0066cc',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                opacity: rotate180 ? 1 : 0.7
-                            }}
-                        >
-                            🔃 180°回転 {rotate180 ? 'ON' : 'OFF'}
-                        </button>
-                    </div>
+                <div className="divider" />
+                <h1>🔄 回転・反転</h1>
+                <div className='gap' style={{ display: 'flex', flexDirection: 'column' }}>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            const v = !flipHorizontal;
+                            setFlipHorizontal(v);
+                            flipHorizontalRef.current = v;
+                        }}
+                        style={{
+                            padding: '6px 10px',
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            background: flipHorizontal ? '#cc6600' : '#0066cc',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            opacity: flipHorizontal ? 1 : 0.7
+                        }}
+                    >
+                        ↔️ 左右反転 {flipHorizontal ? 'ON' : 'OFF'}
+                    </button>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            const v = !flipVertical;
+                            setFlipVertical(v);
+                            flipVerticalRef.current = v;
+                        }}
+                        style={{
+                            padding: '6px 10px',
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            background: flipVertical ? '#cc6600' : '#0066cc',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            opacity: flipVertical ? 1 : 0.7
+                        }}
+                    >
+                        ↕️ 上下反転 {flipVertical ? 'ON' : 'OFF'}
+                    </button>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            const v = !rotate180;
+                            setRotate180(v);
+                            rotate180Ref.current = v;
+                        }}
+                        style={{
+                            padding: '6px 10px',
+                            fontSize: '11px',
+                            fontWeight: 'bold',
+                            background: rotate180 ? '#cc6600' : '#0066cc',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            opacity: rotate180 ? 1 : 0.7
+                        }}
+                    >
+                        🔃 180°回転 {rotate180 ? 'ON' : 'OFF'}
+                    </button>
                 </div>
 
                 {/* 反射強度閾値スライダー */}
-                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.12)' }}>
-                    <h1>⚙️ 反射強度フィルター</h1>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <input
-                            type="range"
-                            min={0}
-                            max={255}
-                            step={1}
-                            value={reflectionThreshold}
-                            onChange={(e) => {
-                                e.stopPropagation();
-                                const v = parseInt(e.target.value, 10);
-                                setReflectionThreshold(v);
-                                // 送信: WebSocket が開いていれば即反映させる
+                <div className="divider" />
+                <h1>⚙️ 反射強度フィルター</h1>
+                <div className='gap' style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                    <input
+                        type="range"
+                        min={0}
+                        max={255}
+                        step={1}
+                        value={reflectionThreshold}
+                        onChange={(e) => {
+                            e.stopPropagation();
+                            const v = parseInt(e.target.value, 10);
+                            setReflectionThreshold(v);
+
+                            // デバウンスして WebSocket へ送信（150ms）
+                            try {
+                                if (reflectionSendTimeoutRef.current) {
+                                    clearTimeout(reflectionSendTimeoutRef.current);
+                                }
+                            } catch (e) { /* ignore */ }
+
+                            reflectionSendTimeoutRef.current = window.setTimeout(() => {
                                 try {
                                     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                                         wsRef.current.send(`THR:${v}`);
@@ -1418,10 +1447,12 @@ const LidarVisualizer = () => {
                                 } catch (err) {
                                     console.warn('Failed to send THR over WebSocket', err);
                                 }
-                            }}
-                        />
-                        <div style={{ minWidth: '48px', textAlign: 'right', fontWeight: 'bold' }}>{reflectionThreshold}</div>
-                    </div>
+                                reflectionSendTimeoutRef.current = null;
+                            }, 150);
+                        }}
+                        style={{ flex: 1, minWidth: 0 }}
+                    />
+                    <div style={{ width: '48px', textAlign: 'right', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{reflectionThreshold}</div>
                 </div>
 
                 <div style={{
@@ -1441,7 +1472,7 @@ const LidarVisualizer = () => {
                 }}
             >
                 <h1>🎹 ピアノペダル設定</h1>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div className='gap' style={{ display: 'flex', flexDirection: 'column' }}>
                     <div>内側半径: <strong>{innerRadius.toFixed(2)} m</strong></div>
                     <input
                         type="range"
@@ -1530,13 +1561,11 @@ const LidarVisualizer = () => {
                 </div>
 
                 {/* 音域シフト */}
-                <div style={{
-                    marginTop: '12px',
-                    paddingTop: '12px',
-                    borderTop: '1px solid rgba(255,255,255,0.3)'
-                }}>
-                    <h1>🎹 音域シフト</h1>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div className="divider" />
+                <h1>🎹 音域シフト</h1>
+                {/* 3分割レイアウト：左右ボタンと中央表示を等幅で揃える */}
+                <div className='gap' style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', alignItems: 'center', width: '100%' }}>
+                    <div style={{ justifySelf: 'center' }}>
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -1563,15 +1592,13 @@ const LidarVisualizer = () => {
                         >
                             −
                         </button>
-                        <div style={{
-                            fontSize: '18px',
-                            fontWeight: 'bold',
-                            minWidth: '60px',
-                            textAlign: 'center',
-                            color: rangeShift === 0 ? '#0f0' : '#ffa500'
-                        }}>
-                            {rangeShift > 0 ? '+' : ''}{rangeShift}
-                        </div>
+                    </div>
+
+                    <div style={{ justifySelf: 'center', textAlign: 'center', fontSize: '18px', fontWeight: 'bold', color: rangeShift === 0 ? '#0f0' : '#ffa500' }}>
+                        {rangeShift > 0 ? '+' : ''}{rangeShift}
+                    </div>
+
+                    <div style={{ justifySelf: 'center' }}>
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -1599,73 +1626,63 @@ const LidarVisualizer = () => {
                             +
                         </button>
                     </div>
-                    <div style={{ fontSize: '10px', marginTop: '5px', opacity: 0.7 }}>
-                        範囲: {PIANO_RANGE.startNote}{PIANO_RANGE.startOctave + rangeShift} 〜 {PIANO_RANGE.endNote}{PIANO_RANGE.endOctave + rangeShift} ({pianoNotesRef.current.length}音)
-                    </div>
+                </div>
+                <div style={{ fontSize: '11px', marginTop: '5px' }}>
+                    範囲: {PIANO_RANGE.startNote}{PIANO_RANGE.startOctave + rangeShift} 〜 {PIANO_RANGE.endNote}{PIANO_RANGE.endOctave + rangeShift} ({pianoNotesRef.current.length}音)
                 </div>
 
                 {/* 波形選択 */}
-                <div style={{
-                    marginTop: '12px',
-                    paddingTop: '12px',
-                    borderTop: '1px solid rgba(255,255,255,0.3)'
-                }}>
-                    <h1>🎵 波形タイプ</h1>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px' }}>
-                        {(['sine', 'triangle', 'sawtooth', 'square'] as OscillatorType[]).map(type => (
-                            <button
-                                key={type}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    setWaveType(type);
-                                    if (synthRef.current) {
-                                        synthRef.current.setWaveType(type);
-                                        // 既に鳴っている音を停止
-                                        synthRef.current.stopAll();
-                                        activeNotesRef.current.clear();
-                                    }
-                                }}
-                                style={{
-                                    padding: '6px 10px',
-                                    fontSize: '11px',
-                                    fontWeight: 'bold',
-                                    background: waveType === type ? '#00cc00' : '#0066cc',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    cursor: 'pointer',
-                                    opacity: waveType === type ? 1 : 0.7
-                                }}
-                            >
-                                {type === 'sine' ? 'サイン波' :
-                                    type === 'triangle' ? '三角波' :
-                                        type === 'sawtooth' ? 'ノコギリ波' :
-                                            '矩形波'}
-                            </button>
-                        ))}
-                    </div>
+                <div className="divider" />
+                <h1>🎵 波形タイプ</h1>
+                <div className='gap' style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', width: '100%' }}>
+                    {(['sine', 'triangle', 'sawtooth', 'square'] as OscillatorType[]).map(type => (
+                        <button
+                            key={type}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setWaveType(type);
+                                if (synthRef.current) {
+                                    synthRef.current.setWaveType(type);
+                                    // 既に鳴っている音を停止
+                                    synthRef.current.stopAll();
+                                    activeNotesRef.current.clear();
+                                }
+                            }}
+                            style={{
+                                padding: '6px 10px',
+                                fontSize: '11px',
+                                fontWeight: 'bold',
+                                background: waveType === type ? '#00cc00' : '#0066cc',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                opacity: waveType === type ? 1 : 0.7
+                            }}
+                        >
+                            {type === 'sine' ? 'サイン波' :
+                                type === 'triangle' ? '三角波' :
+                                    type === 'sawtooth' ? 'ノコギリ波' :
+                                        '矩形波'}
+                        </button>
+                    ))}
                 </div>
 
                 {/* 音の減衰 */}
-                <div style={{
-                    marginTop: '12px',
-                    paddingTop: '12px',
-                    borderTop: '1px solid rgba(255,255,255,0.3)'
-                }}>
-                    <h1>📉 音の減衰</h1>
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            setDecayEnabled(!decayEnabled);
-                        }}
-                        style={{
-                            width: '100%',
-                            background: decayEnabled ? '#00cc00' : '#666666',
-                        }}
-                    >
-                        {decayEnabled ? 'ON' : 'OFF'}
-                    </button>
-                </div>
+                <div className="divider" />
+                <h1>📉 音の減衰</h1>
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setDecayEnabled(!decayEnabled);
+                    }}
+                    style={{
+                        width: '100%',
+                        background: decayEnabled ? '#00cc00' : '#666666',
+                    }}
+                >
+                    {decayEnabled ? 'ON' : 'OFF'}
+                </button>
             </div>
         </div>
     );

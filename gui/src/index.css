@@ -188,7 +188,7 @@ code {
     padding: 10px;
     border-radius: 5px;
     font-family: 'Noto Sans JP', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 h1 {
@@ -205,4 +205,14 @@ button {
     border: none;
     border-radius: 5px;
     cursor: pointer;
+}
+
+div.divider {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.gap {
+    gap: 8px;
 }
