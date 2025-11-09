@@ -2,13 +2,17 @@
 
 ## プロジェクト概要
 
-このプロジェクトは、2D LiDAR センサーを使用して**足で演奏できるピアノ**を実現するインタラクティブシステムです。ESP32が LiDAR データをリアルタイム（10Hz）で WebSocket 経由で配信し、ブラウザ上の Three.js アプリケーションが点群を可視化しながら足の位置を検出して音を鳴らします。
+"SonicRing" は、手を使わずに足で演奏できるインタラクティブなピアノ体験を目指したプロジェクトです。2D LiDAR（距離センサーが回転するもの）で足の位置を非接触で検出し、ESP32 がセンサーデータを集約・配信。ブラウザ上のクライアントが点群を可視化し、ドーナツ型に並んだ鍵盤領域を判定して Web Audio API で音を合成します。
+
+必要なハードウェア:
+- ESP32
+- LD06 LiDAR
 
 ### 主な特徴
 - **リアルタイム可視化**: 360点の LiDAR 点群を Three.js で 3D レンダリング
+- **点群レンダリング（2層）**: 点はアウトラインとコアの2つのレイヤーで描かれ、視認性とグロー効果を両立しています（outline + core）。
 - **ドーナツ状鍵盤**: 半円形（カスタマイズ可能）の鍵盤配置
 - **純正律音階**: 整数比による美しい和音（Just Intonation）
-- **3D 鍵盤表現**: ExtrudeGeometry による厚みのある鍵盤
 - **音域シフト**: ±2オクターブの範囲調整が可能
 - **WebSocket 自動再接続**: 接続が切れても自動で復旧
 
@@ -17,18 +21,29 @@
 ## システムアーキテクチャ
 
 ```mermaid
-graph LR
-    A[ESP32 + LiDAR] -->|WebSocket ws://IP:81/| B[ブラウザ]
-    A -->|Binary: LiDAR Data 360 points| B
-    A -->|JSON: Ping/Pong RTT測定| B
-    B --> C[React + Three.js]
-    C --> D[3D Visualization]
-    C --> E[Web Audio API]
-    E --> F[音声出力]
-
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style B fill:#bbf,stroke:#333,stroke-width:2px
+---
+config:
+  look: neo
+  layout: dagre
+---
+flowchart LR
+ subgraph ブラウザ["ブラウザ"]
+        C["React + Three.js"]
+        D["3D Visualization"]
+        E["Web Audio API"]
+        F["音声出力"]
+  end
+    L["LiDAR<br>(LD06)"] L_L_ESP_0@-. UART<br>(距離、角度、反射強度) .-> ESP["マイコン<br>(ESP32)"]
+    ESP L_ESP_ブラウザ_0@<-. WebSocket<br>(距離配列、Ping/Pong) .-> ブラウザ
+    C --> D & E
+    E --> F
     style E fill:#bfb,stroke:#333,stroke-width:2px
+    style L fill:#ffe6cc,stroke:#333,stroke-width:1px
+    style ESP fill:#f9f,stroke:#333,stroke-width:2px,color:none
+    style ブラウザ fill:#bbf,stroke:#333,stroke-width:2px
+    L_L_ESP_0@{ animation: slow } 
+    L_ESP_ブラウザ_0@{ animation: slow }
+
 ```
 
 ### 処理フロー（1フレーム）
@@ -55,25 +70,21 @@ flowchart TD
 ---
 
 ## データプロトコル詳細
+リトルエンディアン
 
 ### LiDAR データパケット構造
 
-```
-Offset  Size    Type        Description
-------  ------  ----------  ----------------------------------
-0       1       uint8       Packet Type (0x01 = LiDAR)
-1       1       uint8       Reserved (future use)
-2       2       uint16      Point Count (固定値: 360)
-4       4       uint32      Timestamp (ms, ESP32起動からの経過時間)
-8       1440    float32[]   Distance array (360 points × 4 bytes)
-------  ------
-Total:  1448 bytes
-```
+全長: 8 + 360×4 = 1448 bytes
 
-- **エンディアン**: リトルエンディアン（JavaScript の TypedArray のデフォルト）
-- **距離単位**: メートル (m)
-- **角度範囲**: 0° - 359°（1°刻み）
-- **角度基準**: LiDAR の 0° = センサーの前方向（実装では -90° オフセットで調整）
+| オフセット | サイズ | 型 | 説明 |
+|---:|---:|---|---|
+| 0 | 1 | uint8_t | type = 0x01 (LiDAR data) |
+| 1 | 1 | uint8_t | reserved (0x00) |
+| 2 | 2 | uint16_t | point_count (360) |
+| 4 | 4 | uint32_t | timestamp (ESP32起動からの経過時間, ms) |
+| 8 | 360×4 | float[360] | 距離（meters, float32） 各インデックスは 0..359 (deg) |
+
+クライアントは受信バッファの byte 0..7 をパースして、後続の float 配列を DataView / Float32Array で読み取ります。距離が 0.0 の点は「フィルタ済み（無効）」を意味します。
 
 ### Ping/Pong プロトコル（RTT 測定）
 
@@ -93,41 +104,23 @@ Total:  1448 bytes
 }
 ```
 
-- **RTT 計算**: `RTT = 受信時刻 - payload.t`
-- **統計**: 直近30秒間の min/max/avg を計算
-- **タイムアウト**: 3秒以内に応答がない場合、WebSocket を切断して再接続
+クライアント（ブラウザ）が 1 秒ごとに ping メッセージ（テキスト）を送信し、ESP32 側は受信したテキストメッセージをそのままエコーして返す実装になっています。ESP32 から自動的に ping を送信するコードはこのサンプルには含まれていません。
+
+サーバー（ESP32）は受け取った同じ文字列をテキストで返すため、クライアントは受信時刻との差分から RTT を計測できます（サンプル UI はクライアント起点の ping を想定しています）。
+
+直近30秒間の RTT 統計（min/max/avg）も計算して表示します。
+
+
+応答がない場合のタイムアウト処理も実装されています。
+
+## WebSocket コマンド
+
+- THR:<0-255> — 反射強度（confidence）フィルタを更新します。例: `THR:80`。
+- それ以外のテキストはエコーされます（ping の応答やデバッグに有用）。
 
 ---
 
 ## 座標系と角度変換
-
-### LiDAR 座標系 vs Three.js 座標系
-
-```mermaid
-graph TD
-    subgraph LiDAR["LiDAR 座標系 (センサー視点)"]
-        L0["0° (前方)"]
-        L90["90° (右)"]
-        L180["180° (後方)"]
-        L270["270° (左)"]
-    end
-
-    subgraph Three["Three.js 座標系 (Y-up 右手系)"]
-        T_Z_POS["+Z (後方)"]
-        T_X_POS["+X (右)"]
-        T_Z_NEG["-Z (前方)"]
-        T_X_NEG["-X (左)"]
-        T_Y_POS["+Y (上)"]
-    end
-
-    L0 -."-90° オフセット".-> T_Z_NEG
-    L90 -.-> T_X_NEG
-    L180 -.-> T_Z_POS
-    L270 -.-> T_X_POS
-
-    style LiDAR fill:#ffe1e1
-    style Three fill:#e1f5ff
-```
 
 ### 変換アルゴリズム
 
@@ -141,7 +134,7 @@ sequenceDiagram
     Raw->>Rad: angle = i * π / 180
     Rad->>Calc: distance = distances[i]
     Calc->>Pos: X = -cos(angle) * distance
-    Calc->>Pos: Y = 0.1 (固定高さ)
+    Calc->>Pos: Y = 0.07
     Calc->>Pos: Z = sin(angle) * distance
 
     Note over Calc,Pos: -90°オフセットで<br/>前方を-Z方向に配置
@@ -155,7 +148,7 @@ for (let i = 0; i < 360; i++) {
 
     // Three.js座標系に配置 (LiDARの0°を前方に合わせるため-90°オフセット済み)
     positions[i * 3 + 0] = -Math.cos(angle) * distance;  // X座標 (左右反転)
-    positions[i * 3 + 1] = 0.1;                          // Y座標 (鍵盤より上)
+    positions[i * 3 + 1] = 0.07;                          // Y座標 (鍵盤より上)
     positions[i * 3 + 2] = Math.sin(angle) * distance;   // Z座標
 }
 ```
@@ -220,10 +213,10 @@ if (angleDeg >= startAngle && angleDeg <= endAngle) {
 
 | パラメータ | デフォルト値 | 説明 |
 |-----------|-------------|------|
-| `innerRadius` | 1.0 m | ドーナツの内側半径 |
-| `outerRadius` | 1.3 m | ドーナツの外側半径 |
-| `startAngle` | 50° | 鍵盤配置の開始角度（LiDAR基準-90°） |
-| `endAngle` | 270° | 鍵盤配置の終了角度 |
+| `innerRadius` | 0.5 m | ドーナツの内側半径 |
+| `outerRadius` | 0.8 m | ドーナツの外側半径 |
+| `startAngle` | 120° | 鍵盤配置の開始角度（LiDAR基準-90°） |
+| `endAngle` | 240° | 鍵盤配置の終了角度 |
 | `boundaryMarginRatio` | 0.2 (20%) | 鍵盤境界の除外割合 |
 
 ### 境界マージンの動作
@@ -567,22 +560,14 @@ flowchart TD
     Connecting -->|失敗| Disconnected{再接続試行<br/>回数チェック}
     Connected -->|切断/エラー| Disconnected
 
-    Disconnected -->|1回目| Wait1[1秒待機]
-    Disconnected -->|2回目| Wait2[2秒待機]
-    Disconnected -->|3回目| Wait3[3秒待機]
-    Disconnected -->|4回目| Wait4[4秒待機]
-    Disconnected -->|5回目| Wait5[5秒待機]
-    Disconnected -->|6回目以降| Reload[ページリロード]
+    Disconnected -->|attempts < 5| Wait[再接続待機 3000ms]
+    Disconnected -->|attempts >= 5| Reload[ページリロード]
 
-    Wait1 --> Connecting
-    Wait2 --> Connecting
-    Wait3 --> Connecting
-    Wait4 --> Connecting
-    Wait5 --> Connecting
+    Wait --> Connecting
 
     Connected --> Ping[Ping送信<br/>1秒間隔]
     Ping -->|Pong受信| Connected
-    Ping -->|3秒タイムアウト| Timeout[ws.close実行]
+    Ping -->|5秒タイムアウト| Timeout[再接続トリガ]
     Timeout --> Disconnected
 
     style Connected fill:#9f9
@@ -591,37 +576,35 @@ flowchart TD
     style Timeout fill:#faa
 ```
 
+実装上のポイント:
+
+- 再接続の遅延は固定で 3000 ms（3 秒）です。再接続は失敗毎にカウンタを増やし、カウンタが `maxReconnectAttempts`（デフォルト 5）以上になるとページをリロードしてフォールバックします。
+- Ping は 1 秒ごとに送信し、Pong が返らない場合は 5 秒（5000 ms）でタイムアウト扱いになり再接続を試みます。
+
 ```javascript
+// 実装に近い擬似コード（要点のみ）
 const connectWebSocket = () => {
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
-        reconnectAttemptsRef.current = 0;  // 成功したらカウンタリセット
-        // Ping送信を開始
+        reconnectAttemptsRef.current = 0; // 接続成功でカウンタリセット
+        // Ping 送信を開始（1秒間隔）
     };
 
     ws.onclose = () => {
+        // 切断時に再接続をスケジュール
         reconnectAttemptsRef.current++;
-
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-            // 指数バックオフで再接続
-            const delay = Math.min(1000 * reconnectAttemptsRef.current, 5000);
-            setTimeout(() => connectWebSocket(), delay);
-        } else {
-            // 5回失敗したらページリロード
+        if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+            // 上限に達したらタイマー/オーディオを掃除してページを即リロード
             window.location.reload();
+            return;
         }
+
+        const delay = 3000; // 固定 3000ms
+        setTimeout(() => connectWebSocket(), delay);
     };
 };
 ```
-
-**再接続ポリシー**:
-1. 1回目の切断: 1秒後に再接続
-2. 2回目の切断: 2秒後に再接続
-3. 3回目の切断: 3秒後に再接続
-4. 4回目の切断: 4秒後に再接続
-5. 5回目の切断: 5秒後に再接続
-6. それ以上失敗: ページを完全リロード
 
 ### Ping タイムアウト監視
 
@@ -635,11 +618,11 @@ sequenceDiagram
         Browser->>WebSocket: Ping送信
         WebSocket->>ESP32: ping
 
-        alt 3秒以内に応答
+        alt 5秒以内に応答
             ESP32->>WebSocket: pong
             WebSocket->>Browser: Pong受信
             Browser->>Browser: clearTimeout()
-        else 3秒タイムアウト
+    else 5秒タイムアウト
             Browser->>Browser: Timeout検知
             Browser->>WebSocket: ws.close()
             WebSocket->>Browser: onclose イベント
@@ -649,15 +632,15 @@ sequenceDiagram
 ```
 
 ```javascript
-// Ping送信 (1秒間隔)
+    // Ping送信 (1秒間隔)
 setInterval(() => {
     ws.send(JSON.stringify({ type: 'ping', id: seq++, t: nowMs() }));
 
-    // 3秒以内に応答がなければ切断
+    // 5秒以内に応答がなければ切断
     pingTimeoutRef.current = setTimeout(() => {
         console.warn('Ping timeout - reconnecting...');
         ws.close();  // → onclose で再接続処理が起動
-    }, 3000);
+    }, 5000);
 }, 1000);
 
 // Pong受信時
@@ -696,70 +679,6 @@ npm run build
 
 → `dist/` ディレクトリに静的ファイルが生成されます
 
-
-### 音声有効化
-
-1. ブラウザでページを開く
-2. **画面を一度クリック**（AudioContext のユーザージェスチャー要件）
-3. 左上の「Audio: Enabled」を確認
-
----
-
-## 実装の技術的詳細
-
-### メモリ管理
-
-```mermaid
-graph TD
-    Old["古い鍵盤メッシュ"] --> Geo["geometry.dispose()"]
-    Old --> Mat["material.dispose()"]
-    Old --> Rem["scene.remove()"]
-
-    Geo --> GPU["GPU メモリ解放"]
-    Mat --> GPU
-    Rem --> Scene["シーンから削除"]
-
-    GPU --> New["新しい鍵盤生成"]
-    Scene --> New
-
-    style Old fill:#faa
-    style GPU fill:#9f9
-    style New fill:#e1f5ff
-```
-
-```javascript
-// 鍵盤を再生成する際の古いジオメトリの破棄
-pianoKeysRef.current.forEach(key => {
-    if (key.geometry) key.geometry.dispose();  // GPU メモリ解放
-    if (key.material) key.material.dispose();
-    scene.remove(key);
-});
-```
-
-### パフォーマンス最適化
-
-```mermaid
-graph LR
-    A["BufferGeometry<br/>再利用"] --> Perf[高パフォーマンス]
-    B["needsUpdate<br/>フラグ"] --> Perf
-    C["useCallback<br/>メモ化"] --> Perf
-
-    A -.-> A1["毎フレーム生成せず<br/>属性更新のみ"]
-    B -.-> B2["変更部分のみ<br/>GPU転送"]
-    C -.-> C3["不要な再計算<br/>防止"]
-
-    style Perf fill:#9f9
-```
-
-1. **BufferGeometry の再利用**: 毎フレーム新規作成せず、属性を更新
-2. **needsUpdate フラグ**: 変更があった属性のみ GPU に転送
-3. **useCallback**: 鍵盤生成関数をメモ化して不要な再計算を防止
-
-```javascript
-const createPianoKeys = useCallback(() => {
-    // 鍵盤生成処理
-}, []);  // 依存配列が空なので初回のみ生成
-```
 ---
 
 ## ライセンスとクレジット

@@ -56,6 +56,46 @@ const LidarVisualizer = () => {
     const connectionCheckTimerRef = useRef<number | null>(null); // 接続状態チェックタイマー
     const maxReconnectAttempts = 5; // 最大再接続試行回数（5回失敗したらリロード）
     const dataTimeoutDuration = 5000; // データ受信タイムアウト (5秒)
+    // 状態管理
+    const [wsStatus, setWsStatus] = useState<string>('disconnected');
+    const [frameCount, setFrameCount] = useState<number>(0);
+    const [fps, setFps] = useState<number>(0);
+    const [lastTimestamp, setLastTimestamp] = useState<number>(0);
+    const [pingStats, setPingStats] = useState<{ min: number; max: number; avg: number; count: number }>({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
+    const [lastRTT, setLastRTT] = useState<number>(0);
+    const [reflectionThreshold, setReflectionThreshold] = useState<number>(50); // LiDAR 反射強度フィルタ閾値（0-255）
+    const [currentNotes, setCurrentNotes] = useState<Note[]>([]); // 現在踏んでいる音
+    const [audioEnabled, setAudioEnabled] = useState<boolean>(false); // オーディオ有効化状態
+    const [rangeShift, setRangeShift] = useState<number>(PIANO_RANGE.rangeShift); // 音域シフト (-2 ~ +2)
+    const [waveType, setWaveType] = useState<OscillatorType>('sawtooth'); // 波形タイプ（デフォルト: ノコギリ波）
+    const [decayEnabled, setDecayEnabled] = useState<boolean>(true); // 音の減衰ON/OFF（デフォルト: ON）
+    const [flipHorizontal, setFlipHorizontal] = useState<boolean>(false); // 左右反転
+    const [flipVertical, setFlipVertical] = useState<boolean>(false); // 上下反転
+    const [rotate180, setRotate180] = useState<boolean>(false); // 180度回転
+    const [innerRadius, setInnerRadius] = useState(PIANO_CONFIG.innerRadius);
+    const [outerRadius, setOuterRadius] = useState(PIANO_CONFIG.outerRadius);
+    const [boundaryMarginRatio, setBoundaryMarginRatio] = useState(0.2);
+    const [startAngle, setStartAngle] = useState<number>(PIANO_CONFIG.startAngle);
+    const [endAngle, setEndAngle] = useState<number>(PIANO_CONFIG.endAngle);
+    const [mobilePanelsVisible, setMobilePanelsVisible] = useState<boolean>(false);
+    const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+    const flipHorizontalRef = useRef(flipHorizontal);
+    const flipVerticalRef = useRef(flipVertical);
+    const rotate180Ref = useRef(rotate180);
+    const startAngleRef = useRef<number>(startAngle);
+    const endAngleRef = useRef<number>(endAngle);
+
+    // state -> ref 同期
+    useEffect(() => { flipHorizontalRef.current = flipHorizontal; }, [flipHorizontal]);
+    useEffect(() => { flipVerticalRef.current = flipVertical; }, [flipVertical]);
+    useEffect(() => { rotate180Ref.current = rotate180; }, [rotate180]);
+
+    // 可変パラメータ state -> ref 同期
+    useEffect(() => { innerRadiusRef.current = innerRadius; }, [innerRadius]);
+    useEffect(() => { outerRadiusRef.current = outerRadius; }, [outerRadius]);
+    useEffect(() => { boundaryMarginRatioRef.current = boundaryMarginRatio; }, [boundaryMarginRatio]);
+    useEffect(() => { startAngleRef.current = startAngle; endAngleRef.current = endAngle; }, [startAngle, endAngle]);
 
     // 円の中心のテキストを更新する関数
     const updateCenterText = (notes: Note[]) => {
@@ -108,48 +148,6 @@ const LidarVisualizer = () => {
             centerTextRef.current.material.needsUpdate = true;
         }
     };
-
-    const [wsStatus, setWsStatus] = useState<string>('disconnected');
-    const [frameCount, setFrameCount] = useState<number>(0);
-    const [fps, setFps] = useState<number>(0);
-    const [lastTimestamp, setLastTimestamp] = useState<number>(0);
-    const [pingStats, setPingStats] = useState<{ min: number; max: number; avg: number; count: number }>({ min: Infinity, max: -Infinity, avg: 0, count: 0 });
-    const [lastRTT, setLastRTT] = useState<number>(0);
-    // LiDAR 反射強度フィルタ閾値（0-255）
-    const [reflectionThreshold, setReflectionThreshold] = useState<number>(50);
-    const [currentNotes, setCurrentNotes] = useState<Note[]>([]); // 現在踏んでいる音
-    const [audioEnabled, setAudioEnabled] = useState<boolean>(false); // オーディオ有効化状態
-    const [rangeShift, setRangeShift] = useState<number>(PIANO_RANGE.rangeShift); // 音域シフト (-2 ~ +2)
-    const [waveType, setWaveType] = useState<OscillatorType>('sawtooth'); // 波形タイプ（デフォルト: ノコギリ波）
-    const [decayEnabled, setDecayEnabled] = useState<boolean>(true); // 音の減衰ON/OFF（デフォルト: ON）
-    const [flipHorizontal, setFlipHorizontal] = useState<boolean>(false); // 左右反転
-    const [flipVertical, setFlipVertical] = useState<boolean>(false); // 上下反転
-    const [rotate180, setRotate180] = useState<boolean>(false); // 180度回転
-    const [innerRadius, setInnerRadius] = useState(PIANO_CONFIG.innerRadius);
-    const [outerRadius, setOuterRadius] = useState(PIANO_CONFIG.outerRadius);
-    const [boundaryMarginRatio, setBoundaryMarginRatio] = useState(0.2);
-    const [startAngle, setStartAngle] = useState<number>(PIANO_CONFIG.startAngle);
-    const [endAngle, setEndAngle] = useState<number>(PIANO_CONFIG.endAngle);
-    const [mobilePanelsVisible, setMobilePanelsVisible] = useState<boolean>(false);
-    const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-
-    // 反転/回転フラグのref版（WebSocketハンドラのクロージャ問題を回避）
-    const flipHorizontalRef = useRef(flipHorizontal);
-    const flipVerticalRef = useRef(flipVertical);
-    const rotate180Ref = useRef(rotate180);
-    const startAngleRef = useRef<number>(startAngle);
-    const endAngleRef = useRef<number>(endAngle);
-
-    // state -> ref 同期
-    useEffect(() => { flipHorizontalRef.current = flipHorizontal; }, [flipHorizontal]);
-    useEffect(() => { flipVerticalRef.current = flipVertical; }, [flipVertical]);
-    useEffect(() => { rotate180Ref.current = rotate180; }, [rotate180]);
-
-    // 可変パラメータ state -> ref 同期
-    useEffect(() => { innerRadiusRef.current = innerRadius; }, [innerRadius]);
-    useEffect(() => { outerRadiusRef.current = outerRadius; }, [outerRadius]);
-    useEffect(() => { boundaryMarginRatioRef.current = boundaryMarginRatio; }, [boundaryMarginRatio]);
-    useEffect(() => { startAngleRef.current = startAngle; endAngleRef.current = endAngle; }, [startAngle, endAngle]);
 
     // ピアノ鍵盤を作成する関数（useCallbackでメモ化）
     const createPianoKeys = useCallback(() => {
@@ -228,10 +226,10 @@ const LidarVisualizer = () => {
             scene.add(keyMesh);
             keys.push(keyMesh);
 
-            // 3D形状の鍵盤の境界線を追加（重要なエッジのみ）
+            // 3D形状の鍵盤の境界線を追加
             const edgeGeometry = new THREE.EdgesGeometry(keyGeometry, 15); // 15度以上のエッジのみ
             const edgeMaterial = new THREE.LineBasicMaterial({
-                color: note.isBlack ? 0x666666 : 0x888888,
+                color: note.isBlack ? 0x666666 : 0x222222,
                 linewidth: 2
             });
             const edgeLine = new THREE.LineSegments(edgeGeometry, edgeMaterial);
@@ -430,6 +428,11 @@ const LidarVisualizer = () => {
         }
     }, [decayEnabled]);
 
+    // 波形タイプをsynthに反映
+    useEffect(() => {
+        if (synthRef.current) synthRef.current.setWaveType(waveType);
+    }, [waveType]);
+
     // フルスクリーン状態の同期
     useEffect(() => {
         const onFsChange = () => {
@@ -451,6 +454,23 @@ const LidarVisualizer = () => {
             setAudioEnabled(true);
         }
     };
+
+    // すべての音を停止し、アクティブ状態をリセットするユーティリティ
+    const stopAllSounds = useCallback(() => {
+        try {
+            if (synthRef.current) {
+                synthRef.current.stopAll();
+            }
+        } catch (e) {
+            console.warn('stopAllSounds: failed to stop synth', e);
+        }
+        try {
+            activeNotesRef.current.clear();
+        } catch (e) { /* ignore */ }
+        try {
+            setCurrentNotes([]);
+        } catch (e) { /* ignore */ }
+    }, []);
 
     // WebSocket接続とバイナリデータ受信
     useEffect(() => {
@@ -484,7 +504,9 @@ const LidarVisualizer = () => {
             }
         };
 
-        // 再接続をスケジュールする（指数バックオフに近い挙動 + 小さなジッタ）
+
+
+        // 再接続をスケジュールする
         const scheduleReconnect = (reason: string) => {
             console.warn(`Scheduling reconnect: ${reason}`);
 
@@ -495,15 +517,15 @@ const LidarVisualizer = () => {
             if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
                 console.error(`Failed to reconnect after ${reconnectAttemptsRef.current} attempts. Giving up.`);
                 setWsStatus('disconnected');
-                // 最終手段としてページをリロードする前に少し待つ
-                setTimeout(() => window.location.reload(), 2000);
+                // タイマー・オーディオを停止して即リロード
+                try { cleanupWebSocketTimers(); } catch (e) { /* ignore */ }
+                try { stopAllSounds(); } catch (e) { /* ignore */ }
+                window.location.reload();
                 return;
             }
 
-            // 緩やかなバックオフ: 1s,2s,3s... capped to 5s + small jitter
-            const baseDelay = Math.min(1000 * reconnectAttemptsRef.current, 5000);
-            const jitter = Math.floor(Math.random() * 400); // 0-399ms
-            const delay = baseDelay + jitter;
+            const attemptIndex = Math.max(0, reconnectAttemptsRef.current - 1); // 1回目 -> index 0
+            const delay = 3000;
 
             console.log(`Reconnecting in ${delay}ms... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
             setWsStatus('connecting');
@@ -518,11 +540,7 @@ const LidarVisualizer = () => {
             console.warn(`${reason}. Forcing reconnection...`);
 
             // すべての音を停止
-            if (synthRef.current) {
-                synthRef.current.stopAll();
-            }
-            activeNotesRef.current.clear();
-            setCurrentNotes([]);
+            stopAllSounds();
 
             // 状態を更新
             setWsStatus('disconnected');
@@ -613,31 +631,32 @@ const LidarVisualizer = () => {
                     }
                 }, 1000); // 1秒間隔でPing送信
 
-                // データフレーム受信監視タイマー (5秒間データが来なかったら再接続)
-                if (dataTimeoutRef.current) {
-                    clearInterval(dataTimeoutRef.current);
-                }
-                dataTimeoutRef.current = setInterval(() => {
-                    const now = Date.now();
-                    const timeSinceLastData = now - lastDataReceivedRef.current;
-
-                    if (timeSinceLastData > dataTimeoutDuration) {
-                        forceReconnect(`No LiDAR data received for ${timeSinceLastData}ms`);
-                    }
-                }, 2000); // 2秒ごとにチェック
-
-                // WebSocket接続状態の定期チェック (3秒ごと)
+                // データ受信タイムアウトと WebSocket 状態を監視
                 if (connectionCheckTimerRef.current) {
                     clearInterval(connectionCheckTimerRef.current);
                 }
                 connectionCheckTimerRef.current = setInterval(() => {
+                    // 1) データ受信監視 (最後にデータを受け取ってから指定時間を超えたら再接続)
+                    const now = Date.now();
+                    const timeSinceLastData = now - lastDataReceivedRef.current;
+                    if (timeSinceLastData > dataTimeoutDuration) {
+                        forceReconnect(`No LiDAR data received for ${timeSinceLastData}ms`);
+                        return; // 再接続スケジュールしたのでこのサイクルは終了
+                    }
+
+                    // 2) WebSocket オブジェクトの状態監視（CLOSING/CLOSED なら再接続）
                     if (wsRef.current) {
-                        const state = wsRef.current.readyState;
-                        if (state === WebSocket.CLOSING || state === WebSocket.CLOSED) {
-                            forceReconnect('WebSocket state is CLOSING/CLOSED');
+                        try {
+                            const state = wsRef.current.readyState;
+                            if (state === WebSocket.CLOSING || state === WebSocket.CLOSED) {
+                                forceReconnect('WebSocket state is CLOSING/CLOSED');
+                            }
+                        } catch (e) {
+                            // 参照が破棄されている等の例外は安全に無視
+                            console.warn('connection monitor encountered error checking ws state', e);
                         }
                     }
-                }, 3000); // 3秒ごとにチェック
+                }, 2000);
             };
 
             ws.onclose = (e) => {
@@ -648,11 +667,7 @@ const LidarVisualizer = () => {
                 cleanupWebSocketTimers();
 
                 // すべての音を停止
-                if (synthRef.current) {
-                    synthRef.current.stopAll();
-                }
-                activeNotesRef.current.clear();
-                setCurrentNotes([]);
+                stopAllSounds();
 
                 // ソケット参照を切る（もし同一なら）
                 if (wsRef.current === ws) wsRef.current = null;
@@ -695,6 +710,13 @@ const LidarVisualizer = () => {
                         return;
                     }
 
+                    // Validate buffer length to avoid out-of-bounds reads
+                    const expectedBytes = 8 + pointCount * 4;
+                    if (buffer.byteLength < expectedBytes) {
+                        console.warn('LiDAR buffer too short', buffer.byteLength, 'expected', expectedBytes);
+                        return;
+                    }
+
                     const distances = new Float32Array(buffer.buffer, 8, pointCount);
 
                     // 変換を適用（回転・反転） - ref経由で最新値を読む
@@ -732,24 +754,9 @@ const LidarVisualizer = () => {
                         const innerR = innerRadiusRef.current;
                         const outerR = outerRadiusRef.current;
 
-                        // ラベルのワールドYを取得しておく（鍵盤の踏み込みに追従する目的）
                         const currentPianoNotes = pianoNotesRef.current;
                         const angleRange = endAngle - startAngle;
                         const degreesPerKey = currentPianoNotes.length > 0 ? angleRange / currentPianoNotes.length : 360;
-                        const labelWorldYs: number[] = [];
-                        const _tmpVec = new THREE.Vector3();
-                        if (pianoLabelsRef.current && pianoLabelsRef.current.length > 0) {
-                            pianoLabelsRef.current.forEach((lbl, idx) => {
-                                if (!lbl) {
-                                    labelWorldYs[idx] = -Infinity;
-                                    return;
-                                }
-                                // getWorldPosition はメッシュの現在のワールド座標を返す
-                                lbl.getWorldPosition(_tmpVec);
-                                labelWorldYs[idx] = _tmpVec.y;
-                            });
-                        }
-
                         const boundaryMarginRatio = boundaryMarginRatioRef.current || 0;
 
                         for (let i = 0; i < 360; i++) {
@@ -759,9 +766,6 @@ const LidarVisualizer = () => {
                             // X
                             positions[i * 3] = -Math.cos(angle) * distance; // x軸を反転
 
-                            // デフォルトのY位置
-                            let yPos = pointHeightRef.current;
-
                             // この点が鍵盤ドーナツ領域上にあるかをチェック
                             const angleDeg = i - 90;
                             const isInDonutAngle = angleDeg >= startAngle && angleDeg <= endAngle;
@@ -770,14 +774,6 @@ const LidarVisualizer = () => {
                             if (isInDonutAngle && isInDonutRadius && degreesPerKey > 0) {
                                 const relativeAngle = angleDeg - startAngle;
                                 const keyIndex = Math.floor(relativeAngle / degreesPerKey);
-                                // ラベル高さに合わせてYを持ち上げる（踏み込み追従）
-                                if (keyIndex >= 0 && keyIndex < labelWorldYs.length) {
-                                    const labelWorldY = labelWorldYs[keyIndex];
-                                    if (labelWorldY !== -Infinity) {
-                                        // ラベルのワールドYより少し上にして表示（Z-fighting回避）
-                                        yPos = Math.max(pointHeightRef.current, labelWorldY + 0.002);
-                                    }
-                                }
 
                                 // 検出判定（中央領域のみ有効）
                                 if (keyIndex >= 0 && keyIndex < currentPianoNotes.length) {
@@ -793,7 +789,7 @@ const LidarVisualizer = () => {
                                 }
                             }
 
-                            positions[i * 3 + 1] = yPos;
+                            positions[i * 3 + 1] = pointHeightRef.current;
                             positions[i * 3 + 2] = Math.sin(angle) * distance;
 
                             // カラーはドーナツ判定＋鍵盤境界除外割合を考慮して分ける
@@ -836,7 +832,7 @@ const LidarVisualizer = () => {
                         // 新しく検出された音を再生
                         detectedNotes.forEach(note => {
                             if (!activeNotesRef.current.has(note.note)) {
-                                console.log(`Playing: ${note.note}, freq: ${note.freq.toFixed(2)}Hz`);
+                                console.debug(`Playing: ${note.note}, freq: ${note.freq.toFixed(2)}Hz`);
                                 synthRef.current.playNote(note.freq, note.note);
                                 activeNotesRef.current.add(note.note);
                             }
@@ -1020,9 +1016,7 @@ const LidarVisualizer = () => {
             }
 
             // すべての音を停止
-            if (synthRef.current) {
-                synthRef.current.stopAll();
-            }
+            stopAllSounds();
         };
     }, []);
 
@@ -1571,11 +1565,7 @@ const LidarVisualizer = () => {
                                 e.stopPropagation();
                                 const newShift = Math.max(rangeShift - 1, -2);
                                 setRangeShift(newShift);
-                                // 既に鳴っている音を全て停止
-                                if (synthRef.current) {
-                                    synthRef.current.stopAll();
-                                    activeNotesRef.current.clear();
-                                }
+                                stopAllSounds();
                             }}
                             disabled={rangeShift <= -2}
                             style={{
@@ -1604,11 +1594,7 @@ const LidarVisualizer = () => {
                                 e.stopPropagation();
                                 const newShift = Math.min(rangeShift + 1, 2);
                                 setRangeShift(newShift);
-                                // 既に鳴っている音を全て停止
-                                if (synthRef.current) {
-                                    synthRef.current.stopAll();
-                                    activeNotesRef.current.clear();
-                                }
+                                stopAllSounds();
                             }}
                             disabled={rangeShift >= 2}
                             style={{
@@ -1641,12 +1627,7 @@ const LidarVisualizer = () => {
                             onClick={(e) => {
                                 e.stopPropagation();
                                 setWaveType(type);
-                                if (synthRef.current) {
-                                    synthRef.current.setWaveType(type);
-                                    // 既に鳴っている音を停止
-                                    synthRef.current.stopAll();
-                                    activeNotesRef.current.clear();
-                                }
+                                stopAllSounds();
                             }}
                             style={{
                                 padding: '6px 10px',

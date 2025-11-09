@@ -1,58 +1,35 @@
-# ESP32 LiDAR Data Generator
+## 概要
 
-WebSocket経由でLiDARデータを送信するESP32アプリケーション。
+ESP32 は `Serial2` で LD06 LiDAR からデータを受け取り、360点（1°刻み）の距離配列を内部バッファに格納します。1周が完了するたびに、以下形式のバイナリフレームを WebSocket（ポート 81）で接続クライアントに送信します。また、1 秒毎に ping JSON を送る機能と、WebSocket 経由で閾値（反射強度フィルタ）を更新できます。
 
-## 機能
+## データプロトコル
+[データプロトコル詳細](../README.md#データプロトコル詳細)
 
-- **LiDARデータ送信**: 10Hzでバイナリデータ送信
-- **Pingエコーバック**: RTT測定をサポート
-- **シリアルコマンド**: リアルタイムで波形パターンを変更
+## ブラウザ側（受信・パース例）
 
-## シリアルコマンド
+以下はバイナリフレームを受け取り、Float32Array に変換して 360 要素の配列を扱う簡易サンプルです（WebSocket API）。
 
-シリアルモニタで以下のキーを入力:
+```js
+const ws = new WebSocket('ws://<ESP32_IP>:81/');
+ws.binaryType = 'arraybuffer';
 
-- **0**: デフォルト（動的な円パターン）
-- **1**: 正方形パターン
-- **2**: 三角形パターン  
-- **3**: ランダムパターン
-- **h**: ヘルプ表示
+ws.onmessage = (evt) => {
+  if (typeof evt.data === 'string') {
+    // ping / テキストコマンドの応答
+    console.log('text', evt.data);
+    return;
+  }
+  const buf = evt.data; // ArrayBuffer
+  const dv = new DataView(buf);
+  const type = dv.getUint8(0);
+  if (type !== 0x01) return; // LiDAR 以外は無視
+  const pointCount = dv.getUint16(2, true);
+  const timestamp = dv.getUint32(4, true);
+  const floats = new Float32Array(buf, 8, pointCount);
+  // floats は距離配列（meters）: index = degree (0..359)
+  renderPointCloud(floats, timestamp);
+}
 
-## 通信確認方法
-
-1. ESP32にプログラムを書き込む
-2. シリアルモニタを開く（921600 baud）
-3. ブラウザでWebアプリを開く
-4. シリアルモニタで `0`, `1`, `2`, `3` を入力
-5. ブラウザの点群が変化することを確認
-
-## プロトコル
-
-### LiDARデータ（バイナリ、10Hz）
+// 閾値を送る例
+function setThreshold(v) { ws.send('THR:' + Math.max(0, Math.min(255, v|0))); }
 ```
-[Header: 8 bytes]
-  - type: 0x01
-  - reserved: 0x00
-  - point_count: 360
-  - timestamp: uint32_t
-
-[Data: 360 × 4 bytes]
-  - distance: float × 360
-```
-
-### Ping（JSON、1秒間隔、自動）
-```json
-{"type":"ping","id":123,"t":1234567890}
-```
-
-## WiFi設定
-
-```cpp
-const char *wifi_ssid = "raptor";
-const char *wifi_pass = "12345678";
-```
-
-## アクセス方法
-
-- HTTP: `http://<ESP32_IP>/`
-- WebSocket: `ws://<ESP32_IP>:81/`
