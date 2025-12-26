@@ -54,7 +54,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 <html lang="ja">
 <head>
     <meta charset="utf-8">
-    <title>ESP32 LiDAR Visualization</title>
+    <title>LiDARピアノ</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/Raptor-zip/AichiProgrammingContest2025-HardwareCategory@main/gui/dist/app.css">
 </head>
@@ -85,7 +85,7 @@ void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t lengt
         // Pingメッセージをエコーバック
         // payload は NULL 終端されていない可能性があるので安全にコピーして扱う
         char msg[128];
-        size_t copyLen = length < sizeof(msg)-1 ? length : sizeof(msg)-1;
+        size_t copyLen = length < sizeof(msg) - 1 ? length : sizeof(msg) - 1;
         memcpy(msg, payload, copyLen);
         msg[copyLen] = '\0';
         Serial.printf("[WS] recv from %u: %s\n", client_num, msg);
@@ -93,8 +93,10 @@ void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t lengt
         // コマンド: THR:<0-255> で反射閾値を更新
         if ((strncmp(msg, "THR:", 4) == 0)) {
           long v = strtol(msg + 4, NULL, 10);
-          if (v < 0) v = 0;
-          if (v > 255) v = 255;
+          if (v < 0)
+            v = 0;
+          if (v > 255)
+            v = 255;
           reflectionThreshold = (uint8_t)v;
           char resp[64];
           snprintf(resp, sizeof(resp), "THR SET %u", reflectionThreshold);
@@ -179,7 +181,7 @@ void LD06_onReceived(LD06 *lidar) {
 
     // 反射強度フィルタ: confidence が閾値未満ならフィルタ（ここでは 0.0f を格納）
     if (confidence < reflectionThreshold) {
-      LIDAR_DISTANCES[degree] = 0.0f; // フィルタ済み（クライアント側で無視できるように 0 を送る）
+      LIDAR_DISTANCES[degree] = 0.0f;  // フィルタ済み（クライアント側で無視できるように 0 を送る）
     } else {
       LIDAR_DISTANCES[degree] = distance;
     }
@@ -237,7 +239,8 @@ void reconnectWiFi() {
     delay(500);
     Serial.print('.');
     dots++;
-    if (dots % 60 == 0) Serial.println();
+    if (dots % 60 == 0)
+      Serial.println();
   }
   Serial.println();
 
@@ -254,7 +257,6 @@ void reconnectWiFi() {
     IPAddress myIP = WiFi.localIP();
     Serial.print("[WiFi] Connected! IP address: ");
     Serial.println(myIP);
-
   } else {
     // 接続失敗
     wifiRetryCount++;
