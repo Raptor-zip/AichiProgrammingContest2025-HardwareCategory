@@ -8,22 +8,12 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>  // https://github.com/Links2004/arduinoWebSockets
 #include "LD06.h"
+#include "WebAssets.h"
 
 // ----- 設定 -----
-const char *wifi_ssid = "raptor";
-const char *wifi_pass = "12345678";
-
-// const char *wifi_ssid = "SSID-C10A8E";
-// const char *wifi_pass = "h2W9ZKud";
-
-// 再接続設定
-#define WIFI_RECONNECT_INTERVAL 5000  // WiFi再接続試行間隔 (5秒)
-#define WIFI_MAX_RETRIES 10           // WiFi最大再接続試行回数
-#define WIFI_RESET_AFTER_RETRIES 20   // この回数失敗したらリセット
-#define WIFI_CHECK_INTERVAL 10000     // WiFi接続確認間隔 (10秒)
-
-unsigned long lastWifiCheck = 0;
-unsigned int wifiRetryCount = 0;
+// APモード設定
+const char *ap_ssid = "ESP32-LiDAR";
+const char *ap_pass = "12345678";
 
 WebServer httpServer(80);
 WebSocketsServer wsServer(81);
@@ -45,29 +35,7 @@ LD06 ld06;
 
 void LD06_onReceived(LD06 *lidar);
 void sendLidarData();
-void reconnectWiFi();
-void checkWiFiConnection();
-
-// HTML ページ
-const char index_html[] PROGMEM = R"rawliteral(
-<!doctype html>
-<html lang="ja">
-<head>
-    <meta charset="utf-8">
-    <title>LiDARピアノ</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/Raptor-zip/AichiProgrammingContest2025-HardwareCategory@main/gui/dist/app.css">
-</head>
-<body>
-    <div id="root"></div>
-    <script>
-      fetch("https://raw.githubusercontent.com/Raptor-zip/AichiProgrammingContest2025-HardwareCategory/refs/heads/main/gui/dist/app.js")
-      .then(res => res.text())
-      .then(code => eval(code));
-    </script>
-</body>
-</html>
-)rawliteral";
+void setupAccessPoint();
 
 void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
@@ -114,8 +82,27 @@ void onWsEvent(uint8_t client_num, WStype_t type, uint8_t *payload, size_t lengt
 }
 
 void handleRoot() {
-  httpServer.sendHeader("Content-Type", "text/html; charset=utf-8");
-  httpServer.send(200, "text/html", index_html);
+  httpServer.sendHeader("Content-Encoding", "gzip");
+  httpServer.sendHeader("Cache-Control", "public, max-age=86400");
+  httpServer.send_P(200, "text/html", (const char *)index_html_gz, index_html_gz_len);
+}
+
+void handleCSS() {
+  httpServer.sendHeader("Content-Encoding", "gzip");
+  httpServer.sendHeader("Cache-Control", "public, max-age=86400");
+  httpServer.send_P(200, "text/css", (const char *)app_css_gz, app_css_gz_len);
+}
+
+void handleJS() {
+  httpServer.sendHeader("Content-Encoding", "gzip");
+  httpServer.sendHeader("Cache-Control", "public, max-age=86400");
+  httpServer.send_P(200, "application/javascript", (const char *)app_js_gz, app_js_gz_len);
+}
+
+void handleFavicon() {
+  httpServer.sendHeader("Content-Encoding", "gzip");
+  httpServer.sendHeader("Cache-Control", "public, max-age=86400");
+  httpServer.send_P(200, "image/svg+xml", (const char *)favicon_svg_gz, favicon_svg_gz_len);
 }
 
 void setup() {
@@ -127,13 +114,18 @@ void setup() {
   Serial.println();
   Serial.println("ESP32 LiDAR System starting...");
 
-  // WiFi接続（初回は待機）
-  reconnectWiFi();
+  // WiFi APモード起動
+  setupAccessPoint();
 
   // HTTP
   httpServer.on("/", handleRoot);
+  httpServer.on("/app.css", handleCSS);
+  httpServer.on("/app.js", handleJS);
+  httpServer.on("/favicon.svg", handleFavicon);
   httpServer.begin();
   Serial.println("HTTP server started on port 80");
+  Serial.printf("Embedded assets: HTML=%u bytes, CSS=%u bytes, JS=%u bytes, Favicon=%u bytes\n",
+                index_html_gz_len, app_css_gz_len, app_js_gz_len, favicon_svg_gz_len);
 
   // WebSocket
   wsServer.begin();
@@ -145,9 +137,6 @@ void loop() {
   static uint32_t lastServerControlTime = 0;
 
   uint32_t currentTime = millis();
-
-  // WiFi接続チェック（定期的に確認）
-  checkWiFiConnection();
 
   // LD06受信
   if (Serial2.available() > 0) {
@@ -219,93 +208,31 @@ void sendLidarData() {
   Serial.printf("[LiDAR] Sent frame %u\n", lidarFrameCount);
 }
 
-// WiFi再接続処理
-void reconnectWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("[WiFi] Already connected");
-    wifiRetryCount = 0;
-    return;
+// WiFi APモード起動
+void setupAccessPoint() {
+  Serial.printf("[WiFi] Starting Access Point '%s'...\n", ap_ssid);
+
+  WiFi.mode(WIFI_AP);
+  bool success = WiFi.softAP(ap_ssid, ap_pass);
+
+  if (!success) {
+    Serial.println("[WiFi] Failed to start Access Point!");
+    delay(1000);
+    ESP.restart();
   }
 
-  Serial.printf("[WiFi] Connecting to '%s'... (attempt %d)\n", wifi_ssid, wifiRetryCount + 1);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifi_ssid, wifi_pass);
+  delay(100);  // APモードの安定化待ち
 
-  unsigned long start = millis();
-  int dots = 0;
+  IPAddress myIP = WiFi.softAPIP();
+  Serial.print("[WiFi] Access Point started! IP address: ");
+  Serial.println(myIP);
+  Serial.printf("[WiFi] SSID: %s\n", ap_ssid);
+  Serial.printf("[WiFi] Password: %s\n", ap_pass);
 
-  // 最大30秒待つ
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
-    delay(500);
-    Serial.print('.');
-    dots++;
-    if (dots % 60 == 0)
-      Serial.println();
-  }
-  Serial.println();
-
-  if (WiFi.status() == WL_CONNECTED) {
-    // 接続成功
-    wifiRetryCount = 0;
-
-    if (!MDNS.begin("esp32")) {
-      Serial.println("[mDNS] Error starting mDNS");
-    } else {
-      Serial.println("[mDNS] Started successfully");
-    }
-
-    IPAddress myIP = WiFi.localIP();
-    Serial.print("[WiFi] Connected! IP address: ");
-    Serial.println(myIP);
+  // mDNS設定（オプション）
+  if (!MDNS.begin("esp32")) {
+    Serial.println("[mDNS] Error starting mDNS");
   } else {
-    // 接続失敗
-    wifiRetryCount++;
-    Serial.printf("[WiFi] Connection failed (retry count: %d)\n", wifiRetryCount);
-
-    // 最大リトライ回数に達したらリセット
-    if (wifiRetryCount >= WIFI_RESET_AFTER_RETRIES) {
-      Serial.println("[WiFi] Max retries reached. Rebooting ESP32...");
-      delay(1000);
-      ESP.restart();
-    }
-  }
-}
-
-// WiFi接続状態を定期的にチェック
-void checkWiFiConnection() {
-  unsigned long currentTime = millis();
-
-  // 定期チェック間隔
-  if (currentTime - lastWifiCheck < WIFI_CHECK_INTERVAL) {
-    return;
-  }
-  lastWifiCheck = currentTime;
-
-  // WiFi切断検出
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WiFi] Connection lost! Attempting to reconnect...");
-
-    // WebSocketクライアントを切断
-    for (uint8_t i = 0; i < WEBSOCKETS_SERVER_CLIENT_MAX; i++) {
-      if (wsServer.clientIsConnected(i)) {
-        wsServer.disconnect(i);
-      }
-    }
-
-    // 再接続試行
-    reconnectWiFi();
-
-    // 再接続に失敗し、リトライ回数が上限に近い場合
-    if (WiFi.status() != WL_CONNECTED && wifiRetryCount >= WIFI_MAX_RETRIES) {
-      Serial.printf("[WiFi] Still disconnected after %d retries. Waiting %d ms before next attempt...\n",
-                    wifiRetryCount, WIFI_RECONNECT_INTERVAL);
-      delay(WIFI_RECONNECT_INTERVAL);
-    }
-  } else {
-    // 接続中は定期的にログ出力
-    if (wifiRetryCount > 0) {
-      Serial.println("[WiFi] Connection stable. Resetting retry count.");
-      wifiRetryCount = 0;
-    }
+    Serial.println("[mDNS] Started successfully - http://esp32.local/");
   }
 }

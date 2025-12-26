@@ -9,6 +9,15 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_debugger: false
+      },
+      mangle: {
+        safari10: true
+      }
+    },
     rollupOptions: {
       output: {
         // 単一ファイルとして出力
@@ -19,8 +28,13 @@ export default defineConfig({
             return 'app.css'
           }
           return assetInfo.name
-        }
+        },
+        manualChunks: undefined  // チャンク分割無効化
       }
-    }
+    },
+    // 追加の最適化設定
+    cssCodeSplit: false,         // CSS分割無効化
+    reportCompressedSize: true,  // 圧縮サイズレポート
+    chunkSizeWarningLimit: 1000  // 警告しきい値を1MBに
   }
 })
