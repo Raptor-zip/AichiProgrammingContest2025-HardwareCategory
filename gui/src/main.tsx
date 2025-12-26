@@ -1,10 +1,10 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import LidarTest from './LidarTest'
+import LiDARPiano from './components/LiDARPiano'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <LidarTest />
+    <LiDARPiano />
   </React.StrictMode>,
 )

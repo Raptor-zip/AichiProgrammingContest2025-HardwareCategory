@@ -20,7 +20,7 @@ let PIANO_NOTES = generatePianoNotes(
     PIANO_RANGE.rangeShift
 );
 
-const LidarVisualizer = () => {
+const LiDARPiano = () => {
     const containerRef = useRef<HTMLDivElement | null>(null);
     // wrapperRef: root div that contains UI + containerRef; use this for fullscreen so UI stays visible
     const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -1311,8 +1311,7 @@ const LidarVisualizer = () => {
 
             {/* 中央上部: タイトル */}
             <div className="title-container" aria-hidden>
-                <div className="title-main">ピアノ</div>
-                <div className="title-sub">LiDAR FOOT PIANO</div>
+                <div className="title-main">LiDAR<br />Piano</div>
             </div>
 
             {/* fullscreenchange イベントで状態を同期 */}
@@ -1669,4 +1668,4 @@ const LidarVisualizer = () => {
     );
 };
 
-export default LidarVisualizer;
+export default LiDARPiano;
